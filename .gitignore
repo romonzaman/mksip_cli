@@ -1,0 +1,11 @@
+# Build artifact
+/sipclient
+
+# Runtime logs
+*.log
+
+# Kept test output from `make test-keep`
+/testruns/
+
+# Local configuration holds a password; commit config.json.example instead
+/config.json

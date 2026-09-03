@@ -1,0 +1,50 @@
+{
+  "sip": {
+    "username": "1001",
+    "auth_username": "1001",
+    "password": "env:SIP_PASSWORD",
+    "display_name": "CLI Client",
+    "domain": "pbx.example.com",
+    "server": {
+      "host": "10.0.0.10",
+      "port": 5060,
+      "transport": "udp"
+    },
+    "outbound_proxy": "",
+    "register_expiry_seconds": 300,
+    "user_agent": "sipclient-cli/1.0"
+  },
+  "network": {
+    "local_address": "",
+    "local_sip_port": 0,
+    "public_address": "",
+    "stun_server": "",
+    "rport": true
+  },
+  "media": {
+    "codecs": ["PCMU", "PCMA"],
+    "ptime_ms": 20,
+    "dtmf_mode": "rfc4733",
+    "jitter_buffer_ms": 60,
+    "rtcp_enabled": true
+  },
+  "audio": {
+    "input_device": "",
+    "output_device": "",
+    "input_gain": 1.0,
+    "output_gain": 1.0,
+    "ringback_enabled": true
+  },
+  "transfer": {
+    "mode": "refer",
+    "notify_timeout_seconds": 30,
+    "hangup_after_success": true
+  },
+  "logging": {
+    "level": "info",
+    "file": "sipclient.log",
+    "sip_trace": true,
+    "sip_trace_file": "sip-trace.log",
+    "console_level": "warn"
+  }
+}
