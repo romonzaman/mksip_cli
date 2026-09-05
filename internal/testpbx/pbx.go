@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,7 +92,17 @@ type PBX struct {
 	// IgnoreOptions drops in-dialog OPTIONS without responding, so a client's
 	// liveness probe gets no answer at all.
 	IgnoreOptions bool
-	AnswerDelay   time.Duration // delay before answering an INVITE
+
+	// SessionExpires, when non-zero, makes this PBX negotiate an RFC 4028
+	// session timer on calls it answers, naming SessionRefresher as the party
+	// responsible. With refresher=uac the client must send refresh re-INVITEs
+	// or the PBX tears the call down -- the failure this reproduces.
+	SessionExpires   time.Duration
+	SessionRefresher string // "uac" or "uas"; empty means "uac"
+	// MinSE, when non-zero, makes the PBX answer 422 to any Session-Expires
+	// below it, so a client's retry path can be exercised.
+	MinSE       time.Duration
+	AnswerDelay time.Duration // delay before answering an INVITE
 
 	// NotifyViaContact routes the refer NOTIFY by its Request-URI (our Contact)
 	// instead of back down the connection the REFER arrived on. Over TCP that
@@ -119,6 +130,11 @@ type PBX struct {
 
 	outbound []*sipgo.DialogClientSession
 
+	// refreshes counts session-refresh re-INVITEs received, per Call-ID.
+	refreshes map[string]int
+	// expired records calls torn down because no refresh arrived.
+	expired map[string]bool
+
 	rtpMu      sync.Mutex
 	rtpConns   []*net.UDPConn
 	rtpSeen    map[int]int // local port -> packets received
@@ -141,6 +157,8 @@ func New(logger *slog.Logger) (*PBX, error) {
 		ReferOutcome: sip.StatusOK,
 		log:          logger,
 		dialogs:      map[string]*sipgo.DialogServerSession{},
+		refreshes:    map[string]int{},
+		expired:      map[string]bool{},
 		rtpSeen:      map[int]int{},
 	}
 
@@ -400,14 +418,35 @@ func (p *PBX) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	existing := p.dialogs[callID]
 	p.mu.Unlock()
 
-	// A re-INVITE (hold or retrieve): answer 200 with a matching direction.
+	// A re-INVITE: hold, retrieve, or a session refresh.
 	if toTag != "" && existing != nil {
+		if _, ok := sessionExpiresSeconds(req); ok {
+			p.mu.Lock()
+			p.refreshes[callID]++
+			p.mu.Unlock()
+		}
+
 		port := p.rtpPortFor(callID)
 		res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", p.sdp(port, mirror(dir)))
 		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 		res.AppendHeader(p.contactFor(req))
+		if p.SessionExpires > 0 {
+			res.AppendHeader(sip.NewHeader("Session-Expires", p.sessionExpiresValue()))
+		}
 		_ = tx.Respond(res)
 		return
+	}
+
+	// Enforce a minimum session interval, so a client's 422 retry can be tested.
+	if p.MinSE > 0 {
+		if want, ok := sessionExpiresSeconds(req); ok && want < int(p.MinSE.Seconds()) {
+			res := sip.NewResponseFromRequest(req, sip.StatusIntervalToBrief,
+				"Session Interval Too Small", nil)
+			res.AppendHeader(sip.NewHeader("Min-SE",
+				strconv.Itoa(int(p.MinSE.Seconds()))))
+			_ = tx.Respond(res)
+			return
+		}
 	}
 
 	dlg, err := p.dialogUA.ReadInvite(req, tx)
@@ -435,12 +474,123 @@ func (p *PBX) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 
 	port := p.rtpPortFor(callID)
-	if err := dlg.Respond(sip.StatusOK, "OK", p.sdp(port, "sendrecv"),
+	answerHeaders := []sip.Header{
 		p.contactFor(req),
 		sip.NewHeader("Content-Type", "application/sdp"),
+	}
+	if p.SessionExpires > 0 {
+		answerHeaders = append(answerHeaders,
+			sip.NewHeader("Session-Expires", p.sessionExpiresValue()),
+			sip.NewHeader("Require", "timer"))
+	}
+	if err := dlg.Respond(sip.StatusOK, "OK", p.sdp(port, "sendrecv"),
+		answerHeaders...,
 	); err != nil {
 		p.log.Error("testpbx: answer failed", "error", err)
 	}
+
+	if p.SessionExpires > 0 && p.refresherIsClient() {
+		go p.watchSessionRefresh(callID, dlg)
+	}
+}
+
+// sessionExpiresValue renders this PBX's Session-Expires header.
+func (p *PBX) sessionExpiresValue() string {
+	return fmt.Sprintf("%d;refresher=%s", int(p.SessionExpires.Seconds()), p.refresher())
+}
+
+func (p *PBX) refresher() string {
+	if p.SessionRefresher == "" {
+		return "uac"
+	}
+	return p.SessionRefresher
+}
+
+// refresherIsClient reports whether the client is expected to refresh.
+func (p *PBX) refresherIsClient() bool { return p.refresher() == "uac" }
+
+// watchSessionRefresh tears the call down if the client fails to refresh in
+// time, exactly as a real PBX enforcing RFC 4028 would.
+func (p *PBX) watchSessionRefresh(callID string, dlg *sipgo.DialogServerSession) {
+	deadline := time.NewTimer(p.SessionExpires)
+	defer deadline.Stop()
+
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
+
+	for {
+		select {
+		case <-deadline.C:
+			p.mu.Lock()
+			seen := p.refreshes[callID]
+			gone := p.dialogs[callID] == nil
+			p.mu.Unlock()
+
+			if gone {
+				return // call already ended
+			}
+			if seen > 0 {
+				// Refreshed at least once; restart the window.
+				p.mu.Lock()
+				p.refreshes[callID] = 0
+				p.mu.Unlock()
+				deadline.Reset(p.SessionExpires)
+				continue
+			}
+
+			p.log.Warn("testpbx: session expired without a refresh", "call_id", callID)
+			p.mu.Lock()
+			p.expired[callID] = true
+			delete(p.dialogs, callID)
+			p.mu.Unlock()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = dlg.Bye(ctx)
+			cancel()
+			return
+
+		case <-poll.C:
+			p.mu.Lock()
+			gone := p.dialogs[callID] == nil
+			p.mu.Unlock()
+			if gone {
+				return
+			}
+		}
+	}
+}
+
+// SessionRefreshes reports how many session-refresh re-INVITEs arrived.
+func (p *PBX) SessionRefreshes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	total := 0
+	for _, n := range p.refreshes {
+		total += n
+	}
+	return total
+}
+
+// SessionExpiredCalls reports how many calls the PBX tore down because no
+// refresh arrived.
+func (p *PBX) SessionExpiredCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.expired)
+}
+
+// sessionExpiresSeconds reads a Session-Expires header, if present.
+func sessionExpiresSeconds(msg *sip.Request) (int, bool) {
+	h := msg.GetHeader("Session-Expires")
+	if h == nil {
+		return 0, false
+	}
+	first, _, _ := strings.Cut(h.Value(), ";")
+	n, err := strconv.Atoi(strings.TrimSpace(first))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // contactFor builds the Contact a real PBX would return: one naming the dialed

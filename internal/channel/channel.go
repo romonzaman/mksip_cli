@@ -71,6 +71,19 @@ type Channel struct {
 	hangupRequested bool
 	cancelDial      context.CancelFunc
 
+	// dialTarget and dialDisplay remember the last outbound call, so a 422
+	// Session Interval Too Small can be retried with the peer's minimum.
+	dialTarget     sip.Uri
+	dialDisplay    string
+	sessionRetried bool
+	// sessionExpiresOverride is the interval a peer demanded via 422.
+	sessionExpiresOverride time.Duration
+
+	// sessionTimer is the negotiated RFC 4028 state for this call, and
+	// stopSessionTimer tears down its goroutine.
+	sessionTimer     sipua.SessionTimer
+	stopSessionTimer context.CancelFunc
+
 	// decided is closed once a ringing inbound call has been answered,
 	// declined or cancelled. sipgo terminates the INVITE server transaction as
 	// soon as its handler returns, so the handler must block on this until the
@@ -250,6 +263,8 @@ func (c *Channel) newSession(ctx context.Context, port int, codec media.Codec,
 
 // stopMedia tears the session down and returns the port to the pool.
 func (c *Channel) stopMedia() {
+	c.stopSessionTimerLocked()
+
 	if c.session != nil {
 		if st := c.session.Stats(); st.PacketsSent > 0 || st.PacketsRecv > 0 {
 			// Log media statistics at teardown (FR-8.9).
@@ -334,6 +349,7 @@ func (c *Channel) Dial(ctx context.Context, target sip.Uri, display string) erro
 
 	c.inbound = false
 	c.remote = display
+	c.dialTarget, c.dialDisplay = target, display
 	c.startedAt = time.Now()
 	c.connectedAt = time.Time{}
 	c.hangupRequested = false
@@ -342,6 +358,7 @@ func (c *Channel) Dial(ctx context.Context, target sip.Uri, display string) erro
 
 	dialCtx, cancel := context.WithCancel(ctx)
 	c.cancelDial = cancel
+	override := c.sessionExpiresOverride
 	c.mu.Unlock()
 
 	from := &sip.FromHeader{
@@ -362,6 +379,13 @@ func (c *Channel) Dial(ctx context.Context, target sip.Uri, display string) erro
 	invite.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	invite.AppendHeader(sip.NewHeader("Allow",
 		"INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, NOTIFY, REFER"))
+	// Offer a session timer (RFC 4028). Without one, a PBX that expects
+	// periodic refreshes tears the call down at its own interval.
+	stCfg := c.ua.SessionTimerConfig()
+	if override > 0 {
+		stCfg.Expires = override
+	}
+	stCfg.ApplyToInvite(invite)
 	invite.SetBody(sdp)
 
 	dlg, err := c.ua.DialogUA().WriteInvite(dialCtx, invite)
@@ -375,12 +399,13 @@ func (c *Channel) Dial(ctx context.Context, target sip.Uri, display string) erro
 	}
 
 	// Route requests to the PBX rather than straight at the Request-URI host.
-	go c.waitAnswer(dialCtx, cancel, dlg)
+	go c.waitAnswer(ctx, dialCtx, cancel, dlg)
 	return nil
 }
 
 // waitAnswer follows the outbound INVITE to its conclusion.
-func (c *Channel) waitAnswer(ctx context.Context, cancel context.CancelFunc, dlg *sipgo.DialogClientSession) {
+func (c *Channel) waitAnswer(parent, ctx context.Context, cancel context.CancelFunc,
+	dlg *sipgo.DialogClientSession) {
 	defer cancel()
 
 	ringing := false
@@ -402,6 +427,9 @@ func (c *Channel) waitAnswer(ctx context.Context, cancel context.CancelFunc, dlg
 	})
 
 	if err != nil {
+		if c.retryForSessionInterval(parent, dlg, err) {
+			return
+		}
 		c.onDialFailed(dlg, err)
 		return
 	}
@@ -411,6 +439,50 @@ func (c *Channel) waitAnswer(ctx context.Context, cancel context.CancelFunc, dlg
 		c.log.Error("ACK failed", "error", err)
 	}
 	c.onAnswered(dlg)
+}
+
+// retryForSessionInterval handles 422 Session Interval Too Small by redialling
+// once with the interval the peer demands. Without this the call simply fails
+// against a PBX whose minimum is longer than ours.
+func (c *Channel) retryForSessionInterval(parent context.Context,
+	dlg *sipgo.DialogClientSession, err error) bool {
+
+	var resErr *sipgo.ErrDialogResponse
+	if !errors.As(err, &resErr) || resErr.Res == nil {
+		return false
+	}
+	tooSmall := sipua.CheckTooSmall(resErr.Res)
+	if tooSmall == nil {
+		return false
+	}
+	var interval *sipua.ErrSessionIntervalTooSmall
+	if !errors.As(tooSmall, &interval) {
+		return false
+	}
+
+	c.mu.Lock()
+	if c.sessionRetried {
+		// Already retried once; a second 422 means we cannot agree, so let it
+		// fail normally rather than loop.
+		c.mu.Unlock()
+		return false
+	}
+	c.sessionRetried = true
+	c.sessionExpiresOverride = interval.MinSE
+	target, display := c.dialTarget, c.dialDisplay
+	c.stopMedia()
+	c.setState(Idle)
+	c.mu.Unlock()
+
+	_ = dlg.Close()
+	c.log.Info("peer requires a longer session interval, redialling",
+		"min_se", interval.MinSE.String())
+
+	if err := c.Dial(parent, target, display); err != nil {
+		c.emit(Event{Kind: EventError, Channel: c.ID,
+			Text: "call failed after session-interval retry: " + err.Error()})
+	}
+	return true
 }
 
 func (c *Channel) onRinging() {
@@ -544,6 +616,9 @@ func (c *Channel) onAnswered(dlg *sipgo.DialogClientSession) {
 	if u := c.info.RemoteURI; u.Host != "" {
 		c.remote = uriShort(u)
 	}
+	// The peer's answer decides the session timer; if it offered none, none
+	// runs (FR-4.11).
+	c.startSessionTimer(c.ua.SessionTimerConfig().FromResponse(res))
 	c.setState(Connected)
 	// Bring media up now that the codec and remote address are known. Without
 	// this the session would stay muted in both directions.
@@ -567,6 +642,10 @@ func (c *Channel) watchDialog(dlg sipua.Dialog) {
 		return // superseded
 	}
 	ended := c.state.InCall()
+	// Hanging up locally also ends the dialog, and this watcher can win the
+	// race with reset(). Reporting our own hangup as the far end's would be
+	// plainly wrong, so let the hangup path own the message.
+	byUs := c.hangupRequested
 	if ended {
 		c.stopMedia()
 		c.dialog, c.clientDlg, c.serverDlg = nil, nil, nil
@@ -577,7 +656,7 @@ func (c *Channel) watchDialog(dlg sipua.Dialog) {
 		c.connectedAt = time.Time{}
 	}
 	c.mu.Unlock()
-	if ended {
+	if ended && !byUs {
 		c.emit(Event{Channel: c.ID, Text: "call ended by remote"})
 	}
 	_ = dlg.Close()

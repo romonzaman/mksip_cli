@@ -414,6 +414,12 @@ func (u *UA) Client() *sipgo.Client { return u.client }
 // DialogUA exposes the dialog factory.
 func (u *UA) DialogUA() *sipgo.DialogUA { return u.dialog }
 
+// SessionTimerConfig is what this client will agree to for RFC 4028 timers.
+func (u *UA) SessionTimerConfig() SessionTimerConfig {
+	expires, minSE := u.cfg.SessionTimer()
+	return SessionTimerConfig{Expires: expires, MinSE: minSE}
+}
+
 // Contact is the contact header we advertise.
 func (u *UA) Contact() sip.ContactHeader { return u.contact }
 

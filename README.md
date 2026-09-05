@@ -187,6 +187,23 @@ Enable it in config instead of by flag with:
 `port` may be `0` to let the OS choose; the chosen URL is printed at startup and shown by
 `status`.
 
+## Long calls
+
+The client negotiates RFC 4028 session timers, so a PBX that expects periodic refreshes keeps
+the call up. Without them a long call is silently torn down at the PBX's interval — commonly
+30 minutes — with nothing on screen to explain it.
+
+It works in both directions: it refreshes when the PBX names it refresher, answers the PBX's
+refreshes when the PBX is, and hangs up rather than showing a call the far end has already
+abandoned. A `422 Session Interval Too Small` is retried once with the interval the PBX
+demands.
+
+```jsonc
+"sip": { "session_expires_seconds": 1800, "min_se_seconds": 90 }
+```
+
+Set `session_expires_seconds` to `0` to disable it entirely.
+
 ## Seeing SIP packets
 
 `debug on` echoes every SIP message to the terminal as it happens, so you do not have to
