@@ -33,27 +33,44 @@ type Manager struct {
 	activeID int
 	autoHold bool
 
-	events chan Event
+	// subs are the event subscribers. There is more than one surface driving
+	// this client -- the REPL and the web UI -- and a single shared channel
+	// would let them steal events from each other, so each gets its own.
+	subMu sync.Mutex
+	subs  map[*subscriber]struct{}
+
+	// changeListeners are notified after any state change, for surfaces that
+	// re-render rather than react to individual events.
+	changeMu        sync.Mutex
+	changeListeners map[int]func()
+	nextListenerID  int
 
 	// notify routes REFER NOTIFYs to the transfer waiting on that dialog.
 	notifyMu sync.Mutex
 	notifies map[string]func(*sip.Request)
+}
 
-	onChange func()
+// subscriber is one consumer of the event stream.
+type subscriber struct {
+	ch chan Event
+	// dropped counts events discarded because this consumer fell behind. A
+	// slow consumer must never block the manager or the other consumers.
+	dropped uint64
 }
 
 // NewManager builds the channel set. The UA is attached later with SetUA so
 // the manager's handlers can be given to sipua.New.
 func NewManager(cfg config.Config, logger *slog.Logger, router *audio.Router) *Manager {
 	m := &Manager{
-		cfg:      cfg,
-		log:      logger,
-		router:   router,
-		pool:     media.NewPortPool(cfg.Media.RTPPortStart, cfg.Media.RTPPortEnd),
-		activeID: 1,
-		autoHold: true,
-		events:   make(chan Event, 64),
-		notifies: make(map[string]func(*sip.Request)),
+		cfg:             cfg,
+		log:             logger,
+		router:          router,
+		pool:            media.NewPortPool(cfg.Media.RTPPortStart, cfg.Media.RTPPortEnd),
+		activeID:        1,
+		autoHold:        true,
+		subs:            make(map[*subscriber]struct{}),
+		changeListeners: make(map[int]func()),
+		notifies:        make(map[string]func(*sip.Request)),
 	}
 	return m
 }
@@ -69,31 +86,84 @@ func (m *Manager) SetUA(ua *sipua.UA) {
 	m.applyActive()
 }
 
-// SetOnChange registers a callback fired whenever any channel changes state,
-// which the CLI uses to refresh its status line.
-func (m *Manager) SetOnChange(f func()) {
-	m.mu.Lock()
-	m.onChange = f
-	m.mu.Unlock()
+// eventBuffer is how many events a subscriber may fall behind by. Beyond it,
+// events are dropped for that subscriber only.
+const eventBuffer = 64
+
+// Subscribe returns an event stream and a function that closes it. Every
+// subscriber receives every event (FR-9.4); one falling behind loses its own
+// events and affects no one else.
+func (m *Manager) Subscribe() (<-chan Event, func()) {
+	sub := &subscriber{ch: make(chan Event, eventBuffer)}
+
+	m.subMu.Lock()
+	m.subs[sub] = struct{}{}
+	m.subMu.Unlock()
+
+	var once sync.Once
+	return sub.ch, func() {
+		once.Do(func() {
+			m.subMu.Lock()
+			delete(m.subs, sub)
+			m.subMu.Unlock()
+			close(sub.ch)
+		})
+	}
 }
 
-// Events is the asynchronous notification stream for the CLI (FR-9.4).
-func (m *Manager) Events() <-chan Event { return m.events }
+// AddChangeListener registers a callback fired after any state change, and
+// returns a function that removes it.
+func (m *Manager) AddChangeListener(f func()) func() {
+	m.changeMu.Lock()
+	id := m.nextListenerID
+	m.nextListenerID++
+	m.changeListeners[id] = f
+	m.changeMu.Unlock()
 
-func (m *Manager) emit(e Event) {
-	select {
-	case m.events <- e:
-	default:
-		m.log.Warn("event queue full, dropping notification", "text", e.Text)
+	return func() {
+		m.changeMu.Lock()
+		delete(m.changeListeners, id)
+		m.changeMu.Unlock()
 	}
+}
+
+// emit delivers an event to every subscriber without blocking.
+func (m *Manager) emit(e Event) {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+
+	for sub := range m.subs {
+		select {
+		case sub.ch <- e:
+		default:
+			sub.dropped++
+			// Log the first drop per subscriber; after that it would be noise.
+			if sub.dropped == 1 {
+				m.log.Warn("event consumer is behind, dropping notifications",
+					"text", e.Text)
+			}
+		}
+	}
+}
+
+// SubscriberCount reports how many event consumers are attached.
+func (m *Manager) SubscriberCount() int {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	return len(m.subs)
 }
 
 func (m *Manager) stateChanged() {
 	m.applyActive()
-	m.mu.RLock()
-	f := m.onChange
-	m.mu.RUnlock()
-	if f != nil {
+
+	m.changeMu.Lock()
+	listeners := make([]func(), 0, len(m.changeListeners))
+	for _, f := range m.changeListeners {
+		listeners = append(listeners, f)
+	}
+	m.changeMu.Unlock()
+
+	for _, f := range listeners {
 		f()
 	}
 }

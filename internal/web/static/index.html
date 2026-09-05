@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mksip control</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header>
+  <div class="reg">
+    <span id="reg-dot" class="dot"></span>
+    <strong id="reg-state">connecting…</strong>
+    <span id="reg-aor" class="muted"></span>
+  </div>
+  <div class="reg-detail muted" id="reg-detail"></div>
+</header>
+
+<p class="notice">
+  Audio stays on the machine running mksip — this page controls the client, it does
+  not carry the call. A warm transfer still needs you at that machine to speak to the
+  party you are consulting.
+</p>
+
+<div id="offline" class="offline" hidden>
+  Disconnected from mksip. Reconnecting…
+</div>
+
+<main>
+  <section class="channels" id="channels"></section>
+
+  <section class="panel">
+    <h2>Dialpad</h2>
+    <div class="dial-row">
+      <input id="target" type="text" placeholder="extension or sip: URI"
+             autocomplete="off" spellcheck="false">
+      <button id="dial" class="primary">Dial</button>
+    </div>
+    <div class="keys" id="keys"></div>
+    <p class="muted" id="dtmf-hint">Keys type into the box. During a call they send DTMF.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Call control</h2>
+    <div class="actions">
+      <button data-action="swap" id="btn-swap">Swap</button>
+      <button data-action="xfer" id="btn-xfer" class="primary">Transfer</button>
+      <button data-action="cancelxfer" id="btn-cancelxfer">Cancel consult</button>
+      <button data-action="mute" id="btn-mute">Mute</button>
+      <button data-action="hangup-all" id="btn-hangup-all" class="danger">Hang up all</button>
+    </div>
+    <div class="dial-row">
+      <input id="bxfer-target" type="text" placeholder="blind transfer to…"
+             autocomplete="off" spellcheck="false">
+      <button id="bxfer">Blind transfer</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Activity</h2>
+    <ul id="log" class="log"></ul>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

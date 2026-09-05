@@ -15,16 +15,17 @@ import (
 	"sipclient/internal/applog"
 	"sipclient/internal/channel"
 	"sipclient/internal/config"
+	"sipclient/internal/control"
 	"sipclient/internal/sipua"
 	"sipclient/internal/transfer"
 )
 
 // CLI is the interactive shell.
 type CLI struct {
-	cfg  config.Config
-	ua   *sipua.UA
-	mgr  *channel.Manager
-	xfer *transfer.Transferor
+	cfg config.Config
+	ctl *control.Controller
+	ua  *sipua.UA
+	mgr *channel.Manager
 
 	tracer     *applog.Tracer
 	deviceDesc string
@@ -40,7 +41,14 @@ type CLI struct {
 
 	// lastStatus dedupes the status line so it is printed only when something
 	// actually changed.
-	lastStatus string
+	lastStatus        string
+	unsubscribeChange func()
+
+	// events is subscribed at construction, not when the pump goroutine runs.
+	// An inbound call can arrive before the REPL is scheduled, and subscribing
+	// later would lose that announcement.
+	events            <-chan channel.Event
+	unsubscribeEvents func()
 
 	quitOnce sync.Once
 	quit     chan struct{}
@@ -52,9 +60,7 @@ type CLI struct {
 // Options configures the CLI.
 type Options struct {
 	Config     config.Config
-	UA         *sipua.UA
-	Manager    *channel.Manager
-	Transferor *transfer.Transferor
+	Controller *control.Controller
 	Tracer     *applog.Tracer
 	DeviceDesc string
 }
@@ -63,15 +69,16 @@ type Options struct {
 func New(opt Options) *CLI {
 	c := &CLI{
 		cfg:        opt.Config,
-		ua:         opt.UA,
-		mgr:        opt.Manager,
-		xfer:       opt.Transferor,
+		ctl:        opt.Controller,
+		ua:         opt.Controller.UA(),
+		mgr:        opt.Controller.Manager(),
 		tracer:     opt.Tracer,
 		deviceDesc: opt.DeviceDesc,
 		out:        os.Stdout,
 		quit:       make(chan struct{}),
 	}
 	c.buildCommands()
+	c.events, c.unsubscribeEvents = c.mgr.Subscribe()
 	return c
 }
 
@@ -131,6 +138,11 @@ func (c *CLI) runInteractive(ctx context.Context) error {
 		return fmt.Errorf("cli: start readline: %w", err)
 	}
 	defer rl.Close()
+	defer func() {
+		if c.unsubscribeChange != nil {
+			c.unsubscribeChange()
+		}
+	}()
 
 	c.outMu.Lock()
 	c.rl = rl
@@ -142,7 +154,7 @@ func (c *CLI) runInteractive(ctx context.Context) error {
 		c.tracer.SetConsole(c.Writer())
 	}
 
-	c.mgr.SetOnChange(c.refreshStatus)
+	c.unsubscribeChange = c.mgr.AddChangeListener(c.refreshStatus)
 
 	c.printf("sipclient ready. `help` for commands, `status` for state.")
 	c.refreshStatus()
@@ -254,13 +266,15 @@ func (c *CLI) dispatch(ctx context.Context, line string) error {
 
 // pumpEvents prints asynchronous notifications above the prompt (FR-9.4).
 func (c *CLI) pumpEvents(ctx context.Context) {
+	defer c.unsubscribeEvents()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.quit:
 			return
-		case e := <-c.mgr.Events():
+		case e := <-c.events:
 			if e.Kind == channel.EventStateChange {
 				c.refreshStatus()
 				continue

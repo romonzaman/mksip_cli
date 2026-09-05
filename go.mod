@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/chzyer/readline v1.5.1 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/emiago/sipgo v1.6.0 // indirect
 	github.com/gen2brain/malgo v0.11.26 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect

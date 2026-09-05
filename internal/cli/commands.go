@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emiago/sipgo/sip"
-
 	"sipclient/internal/audio"
 	"sipclient/internal/channel"
 )
@@ -180,34 +178,11 @@ func (c *CLI) cmdDial(ctx context.Context, args []string) error {
 		return err
 	}
 
-	target, err := c.ua.ResolveTarget(args[0])
+	used, err := c.ctl.Dial(ctx, args[0], id)
 	if err != nil {
 		return err
 	}
-
-	var ch *channel.Channel
-	if id == 0 {
-		// No channel given: use the active one if idle, else the other idle one.
-		if active := c.mgr.Active(); active.State() == channel.Idle {
-			ch = active
-		} else if idle := c.mgr.FirstIdle(); idle != nil {
-			ch = idle
-		} else {
-			return fmt.Errorf("both channels are busy; hang up one first")
-		}
-	} else {
-		if ch, err = c.mgr.Get(id); err != nil {
-			return err
-		}
-	}
-
-	if err := c.mgr.SetActive(ctx, ch.ID); err != nil {
-		return err
-	}
-	if err := ch.Dial(ctx, target, args[0]); err != nil {
-		return err
-	}
-	c.printf("channel %d: calling %s", ch.ID, (&target).String())
+	c.printf("channel %d: calling %s", used, args[0])
 	return nil
 }
 
@@ -216,28 +191,7 @@ func (c *CLI) cmdAnswer(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ch, err := c.resolveRinging(id)
-	if err != nil {
-		return err
-	}
-	if err := c.mgr.SetActive(ctx, ch.ID); err != nil {
-		return err
-	}
-	return ch.Answer(ctx)
-}
-
-// resolveRinging finds the channel a bare `answer` or `reject` should act on.
-func (c *CLI) resolveRinging(id int) (*channel.Channel, error) {
-	if id != 0 {
-		return c.mgr.Get(id)
-	}
-	for _, ch := range c.mgr.Channels() {
-		s := ch.Snapshot()
-		if s.State == channel.Ringing && s.Inbound {
-			return ch, nil
-		}
-	}
-	return nil, fmt.Errorf("no ringing inbound call")
+	return c.ctl.Answer(ctx, id)
 }
 
 func (c *CLI) cmdReject(ctx context.Context, args []string) error {
@@ -245,25 +199,18 @@ func (c *CLI) cmdReject(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	code := sip.StatusGlobalDecline
+	code := 0 // controller applies the default
 	if len(args) > 1 {
 		if code, err = strconv.Atoi(args[1]); err != nil {
 			return fmt.Errorf("reject code must be a number, got %q", args[1])
 		}
-		if code < 300 || code > 699 {
-			return fmt.Errorf("reject code must be 300-699, got %d", code)
-		}
 	}
-	ch, err := c.resolveRinging(id)
-	if err != nil {
-		return err
-	}
-	return ch.Reject(ctx, code, "Decline")
+	return c.ctl.Reject(ctx, id, code)
 }
 
 func (c *CLI) cmdHangup(ctx context.Context, args []string) error {
 	if len(args) > 0 && strings.EqualFold(args[0], "all") {
-		c.mgr.HangupAll(ctx)
+		c.ctl.HangupAll(ctx)
 		c.printf("all channels cleared")
 		return nil
 	}
@@ -271,11 +218,7 @@ func (c *CLI) cmdHangup(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ch, err := c.mgr.Resolve(id)
-	if err != nil {
-		return err
-	}
-	return ch.Hangup(ctx)
+	return c.ctl.Hangup(ctx, id)
 }
 
 func (c *CLI) cmdHold(ctx context.Context, args []string) error {
@@ -283,11 +226,7 @@ func (c *CLI) cmdHold(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ch, err := c.mgr.Resolve(id)
-	if err != nil {
-		return err
-	}
-	return ch.Hold(ctx)
+	return c.ctl.Hold(ctx, id, true)
 }
 
 func (c *CLI) cmdUnhold(ctx context.Context, args []string) error {
@@ -295,67 +234,39 @@ func (c *CLI) cmdUnhold(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ch, err := c.mgr.Resolve(id)
-	if err != nil {
-		return err
-	}
-	if err := c.mgr.SetActive(ctx, ch.ID); err != nil {
-		return err
-	}
-	return ch.Unhold(ctx)
+	return c.ctl.Hold(ctx, id, false)
 }
 
 func (c *CLI) cmdSwap(ctx context.Context, _ []string) error {
-	return c.mgr.Swap(ctx)
+	return c.ctl.Swap(ctx)
 }
 
 // cmdXfer runs the attended transfer. With no arguments it does the natural
 // thing: transfer the other party to whoever we are consulting on the active
 // channel (FR-5.1).
 func (c *CLI) cmdXfer(ctx context.Context, args []string) error {
-	transfereeID, consultID, err := c.transferRoles(args)
+	var transfereeID, consultID int
+	var err error
+	if len(args) > 0 {
+		if transfereeID, err = parseChannel(args, 0); err != nil {
+			return err
+		}
+	}
+	if len(args) > 1 {
+		if consultID, err = parseChannel(args, 1); err != nil {
+			return err
+		}
+	}
+
+	transfereeID, consultID, err = c.ctl.TransferRoles(transfereeID, consultID)
 	if err != nil {
 		return err
 	}
 
 	c.printf("transferring channel %d to channel %d's party...", transfereeID, consultID)
-	res, err := c.xfer.Attended(ctx, transfereeID, consultID)
+	res, err := c.ctl.AttendedTransfer(ctx, transfereeID, consultID)
 	c.reportTransfer(res, err)
 	return nil
-}
-
-// transferRoles works out which channel carries the transferee and which the
-// consultation.
-func (c *CLI) transferRoles(args []string) (transfereeID, consultID int, err error) {
-	switch len(args) {
-	case 0:
-		consultID = c.mgr.ActiveID()
-		for _, ch := range c.mgr.Channels() {
-			if ch.ID != consultID {
-				transfereeID = ch.ID
-			}
-		}
-	case 1:
-		if transfereeID, err = parseChannel(args, 0); err != nil {
-			return 0, 0, err
-		}
-		for _, ch := range c.mgr.Channels() {
-			if ch.ID != transfereeID {
-				consultID = ch.ID
-			}
-		}
-	default:
-		if transfereeID, err = parseChannel(args, 0); err != nil {
-			return 0, 0, err
-		}
-		if consultID, err = parseChannel(args, 1); err != nil {
-			return 0, 0, err
-		}
-	}
-	if transfereeID == 0 || consultID == 0 {
-		return 0, 0, fmt.Errorf("could not determine channels; use `xfer <transferee> <consult>`")
-	}
-	return transfereeID, consultID, nil
 }
 
 func (c *CLI) cmdBxfer(ctx context.Context, args []string) error {
@@ -363,17 +274,12 @@ func (c *CLI) cmdBxfer(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ch, err := c.mgr.Resolve(id)
+	used, err := c.ctl.ResolveChannelID(id)
 	if err != nil {
 		return err
 	}
-	target, err := c.ua.ResolveTarget(args[0])
-	if err != nil {
-		return err
-	}
-
-	c.printf("blind transferring channel %d to %s...", ch.ID, (&target).String())
-	res, err := c.xfer.Blind(ctx, ch.ID, target)
+	c.printf("blind transferring channel %d to %s...", used, args[0])
+	res, err := c.ctl.BlindTransfer(ctx, id, args[0])
 	c.reportTransfer(res, err)
 	return nil
 }
@@ -383,16 +289,8 @@ func (c *CLI) cmdCancelXfer(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if consultID == 0 {
-		consultID = c.mgr.ActiveID()
-	}
-	transfereeID := 0
-	for _, ch := range c.mgr.Channels() {
-		if ch.ID != consultID {
-			transfereeID = ch.ID
-		}
-	}
-	if err := c.xfer.CancelConsult(ctx, consultID, transfereeID); err != nil {
+	transfereeID, err := c.ctl.CancelConsult(ctx, consultID)
+	if err != nil {
 		return err
 	}
 	c.printf("consultation abandoned; back on channel %d", transfereeID)
@@ -404,22 +302,25 @@ func (c *CLI) cmdDTMF(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ch, err := c.mgr.Resolve(id)
+	used, err := c.ctl.ResolveChannelID(id)
 	if err != nil {
 		return err
 	}
-	if err := ch.SendDTMF(args[0]); err != nil {
+	if err := c.ctl.SendDTMF(id, args[0]); err != nil {
 		return err
 	}
-	c.printf("channel %d: sent DTMF %s", ch.ID, args[0])
+	c.printf("channel %d: sent DTMF %s", used, args[0])
 	return nil
 }
 
 func (c *CLI) cmdStatus(_ context.Context, _ []string) error {
 	reg := c.ua.Registration()
 	c.printf("registration: %s", describeRegistration(reg))
-	c.printf("audio: %s%s", c.deviceDesc, mutedSuffix(c.mgr.Muted()))
+	c.printf("audio: %s%s", c.deviceDesc, mutedSuffix(c.ctl.Muted()))
 	c.printf("debug: %s", c.debugState())
+	if url := c.ctl.WebURL(); url != "" {
+		c.printf("web:   %s", url)
+	}
 
 	for _, ch := range c.mgr.Channels() {
 		s := ch.Snapshot()
@@ -497,13 +398,13 @@ func (c *CLI) cmdStats(_ context.Context, args []string) error {
 }
 
 func (c *CLI) cmdRegister(ctx context.Context, _ []string) error {
-	c.ua.TriggerRegister()
+	c.ctl.Register()
 	c.printf("registration attempt requested")
 	return nil
 }
 
 func (c *CLI) cmdUnregister(ctx context.Context, _ []string) error {
-	if err := c.ua.Unregister(ctx); err != nil {
+	if err := c.ctl.Unregister(ctx); err != nil {
 		return err
 	}
 	c.printf("de-registered")
@@ -534,13 +435,13 @@ func (c *CLI) cmdDevices(_ context.Context, _ []string) error {
 }
 
 func (c *CLI) cmdMute(_ context.Context, _ []string) error {
-	c.mgr.SetMuted(true)
+	c.ctl.SetMuted(true)
 	c.printf("microphone muted")
 	return nil
 }
 
 func (c *CLI) cmdUnmute(_ context.Context, _ []string) error {
-	c.mgr.SetMuted(false)
+	c.ctl.SetMuted(false)
 	c.printf("microphone live")
 	return nil
 }
