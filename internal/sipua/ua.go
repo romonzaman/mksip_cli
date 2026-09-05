@@ -5,8 +5,10 @@ package sipua
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +48,10 @@ type UA struct {
 	listenHost string
 	localPort  int
 
+	// The signalling sockets, bound at construction and served by Listen.
+	udpConn net.PacketConn
+	tcpLn   net.Listener
+
 	contact sip.ContactHeader
 
 	reg      registrar
@@ -78,19 +84,23 @@ func New(cfg config.Config, logger *slog.Logger, tracer sip.SIPTracer, handlers 
 		u.listenHost = "0.0.0.0"
 	}
 
-	// Resolve port 0 to a concrete free port before building the Contact.
-	// Advertising an unresolved 0 would omit the port entirely, and peers would
-	// then send in-dialog requests (ACK, BYE, NOTIFY) to the default 5060,
-	// where nothing is listening.
-	u.localPort = cfg.Network.LocalSIPPort
-	if u.localPort == 0 {
-		u.localPort, err = freePort(cfg.SIP.Server.Transport, u.listenHost)
-		if err != nil {
-			return nil, err
-		}
+	// Bind the signalling sockets now, before the Contact is built, and keep
+	// them. Probing for a free port and releasing it leaves a window in which
+	// something else can take it -- another instance of this client, or any
+	// other process -- and the bind then fails at listen time. Holding the
+	// sockets from the moment the port is chosen closes that window, and gives
+	// the real port to advertise.
+	udpConn, tcpLn, port, err := bindSignalling(u.listenHost, cfg.Network.LocalSIPPort)
+	if err != nil {
+		return nil, err
+	}
+	u.udpConn, u.tcpLn = udpConn, tcpLn
+	u.localPort = port
+	if cfg.Network.LocalSIPPort == 0 {
 		logger.Info("selected local SIP port", "port", u.localPort)
 	}
 
+	// What peers are told to contact, which is not necessarily where we bind.
 	u.signalHost = local
 	switch {
 	case cfg.Network.PublicAddress != "":
@@ -99,7 +109,7 @@ func New(cfg config.Config, logger *slog.Logger, tracer sip.SIPTracer, handlers 
 	case cfg.Network.STUNServer != "":
 		mapped, err := discoverPublicAddress(cfg.Network.STUNServer, 3*time.Second)
 		if err != nil {
-			// STUN is a convenience; a LAN PBX does not need it (open question Q2).
+			// STUN is a convenience; a LAN PBX does not need it.
 			logger.Warn("STUN discovery failed, using local address",
 				"server", cfg.Network.STUNServer, "error", err)
 		} else {
@@ -192,23 +202,49 @@ func resolveLocalHost(cfg config.Config) (string, error) {
 	return host, nil
 }
 
-// freePort asks the OS for an unused port so it can be advertised in Contact.
-func freePort(transport, host string) (int, error) {
-	if transport == "tcp" {
-		l, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
-		if err != nil {
-			return 0, fmt.Errorf("network.local_sip_port: cannot find a free TCP port: %w", err)
+// bindSignalling binds UDP and TCP on the same port and returns both, along
+// with the port actually used.
+//
+// Both transports are always served, so both must be bound; requesting port 0
+// means asking the OS for one that is free on both, which occasionally takes
+// more than one attempt because the two protocols have separate port spaces.
+func bindSignalling(host string, port int) (net.PacketConn, net.Listener, int, error) {
+	// An empty or wildcard host binds every interface dual-stack, matching
+	// what the SIP stack did when it resolved the address itself.
+	addr := func(p int) string {
+		if host == "" || host == "0.0.0.0" {
+			return ":" + strconv.Itoa(p)
 		}
-		defer l.Close()
-		return l.Addr().(*net.TCPAddr).Port, nil
+		return net.JoinHostPort(host, strconv.Itoa(p))
 	}
 
-	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(host)})
-	if err != nil {
-		return 0, fmt.Errorf("network.local_sip_port: cannot find a free UDP port: %w", err)
+	const attempts = 8
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		udpConn, err := net.ListenPacket("udp", addr(port))
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("sip: bind udp %s: %w", addr(port), err)
+		}
+
+		chosen := udpConn.LocalAddr().(*net.UDPAddr).Port
+		tcpLn, err := net.Listen("tcp", addr(chosen))
+		if err == nil {
+			return udpConn, tcpLn, chosen, nil
+		}
+
+		_ = udpConn.Close()
+		lastErr = err
+		if port != 0 {
+			// A specific port was asked for and TCP cannot have it; retrying
+			// would just fail the same way.
+			return nil, nil, 0, fmt.Errorf("sip: bind tcp %s: %w", addr(port), err)
+		}
+		// With port 0 the OS may simply have handed out a UDP port whose TCP
+		// counterpart is taken. Ask again.
 	}
-	defer c.Close()
-	return c.LocalAddr().(*net.UDPAddr).Port, nil
+	return nil, nil, 0, fmt.Errorf(
+		"sip: could not find a port free on both udp and tcp after %d attempts: %w",
+		attempts, lastErr)
 }
 
 func (u *UA) registerHandlers() {
@@ -369,34 +405,68 @@ func unusableAddressReason(host string) string {
 	return ""
 }
 
-// listenOn starts one transport and reports a bind failure promptly.
+// listenOn serves one of the sockets bound at construction.
 func (u *UA) listenOn(ctx context.Context, network string) error {
 	addr := net.JoinHostPort(u.listenHost, fmt.Sprint(u.localPort))
 
+	var serve func() error
+	switch network {
+	case "udp":
+		conn := u.udpConn
+		if conn == nil {
+			return fmt.Errorf("sip: no udp socket bound")
+		}
+		go closeOnDone(ctx, conn)
+		serve = func() error { return u.server.ServeUDP(conn) }
+	case "tcp":
+		ln := u.tcpLn
+		if ln == nil {
+			return fmt.Errorf("sip: no tcp socket bound")
+		}
+		go closeOnDone(ctx, ln)
+		serve = func() error { return u.server.ServeTCP(ln) }
+	default:
+		return fmt.Errorf("sip: unsupported transport %q", network)
+	}
+
 	ready := make(chan error, 1)
 	go func() {
-		err := u.server.ListenAndServe(ctx, network, addr)
+		err := serve()
 		if err != nil && ctx.Err() == nil {
 			u.log.Error("SIP transport stopped", "network", network, "error", err)
 		}
 		ready <- err
 	}()
 
-	// Give the listener a moment to fail fast on a port clash.
+	// The socket is already bound, so a failure here is immediate.
 	select {
 	case err := <-ready:
 		if err != nil {
-			return fmt.Errorf("sip: listen %s on %s: %w", network, addr, err)
+			return fmt.Errorf("sip: serve %s on %s: %w", network, addr, err)
 		}
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond):
 	}
 	u.log.Info("SIP transport listening", "network", network, "addr", addr,
 		"advertised", net.JoinHostPort(u.signalHost, fmt.Sprint(u.localPort)))
 	return nil
 }
 
+// closeOnDone shuts a listener when the context ends.
+func closeOnDone(ctx context.Context, c io.Closer) {
+	<-ctx.Done()
+	_ = c.Close()
+}
+
 // Close shuts the stack down.
 func (u *UA) Close() {
+	// Sockets are bound at construction, so they must be released even if
+	// Listen was never reached.
+	if u.udpConn != nil {
+		_ = u.udpConn.Close()
+	}
+	if u.tcpLn != nil {
+		_ = u.tcpLn.Close()
+	}
 	if u.client != nil {
 		_ = u.client.Close()
 	}

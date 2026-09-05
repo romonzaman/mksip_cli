@@ -35,7 +35,9 @@
     "output_device": "",
     "input_gain": 1.0,
     "output_gain": 1.0,
-    "ringback_enabled": true
+    "ringback_enabled": true,
+    "echo_cancel": true,
+    "echo_tail_ms": 128
   },
   "transfer": {
     "mode": "refer",

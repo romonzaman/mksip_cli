@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"sipclient/internal/audio"
 	"sipclient/internal/channel"
 	"sipclient/internal/history"
 )
@@ -408,6 +407,16 @@ func (c *CLI) cmdStats(_ context.Context, args []string) error {
 		c.printf("  lost=%d  late=%d  concealed=%d  jitter=%.1fms",
 			st.Lost, st.Late, st.Concealed, st.JitterMS)
 	}
+	if st, ok := c.ctl.EchoStats(); ok {
+		state := "adapting"
+		if st.Converged {
+			state = "converged"
+		}
+		if st.DoubleTalk {
+			state += ", both talking"
+		}
+		c.printf("echo cancellation: %s, %.0f dB reduction", state, st.ERLE)
+	}
 	if !any {
 		return fmt.Errorf("no active media session")
 	}
@@ -429,7 +438,7 @@ func (c *CLI) cmdUnregister(ctx context.Context, _ []string) error {
 }
 
 func (c *CLI) cmdDevices(_ context.Context, _ []string) error {
-	devices, err := audio.List()
+	devices, err := c.ctl.ListAudioDevices()
 	if err != nil {
 		return err
 	}

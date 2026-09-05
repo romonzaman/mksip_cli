@@ -112,6 +112,14 @@ type Audio struct {
 	InputGain       float64 `json:"input_gain"`
 	OutputGain      float64 `json:"output_gain"`
 	RingbackEnabled bool    `json:"ringback_enabled"`
+
+	// EchoCancel removes the far end's voice from the microphone, which is
+	// what makes a speakerphone usable. It requires a duplex audio device; if
+	// one cannot be opened the client says so and carries on without it.
+	EchoCancel bool `json:"echo_cancel"`
+	// EchoTailMS is how long an echo path to model. Longer covers a more
+	// reverberant room but converges more slowly.
+	EchoTailMS int `json:"echo_tail_ms"`
 }
 
 type Transfer struct {
@@ -148,7 +156,10 @@ func Default() Config {
 			PtimeMS: 20, DTMFMode: "rfc4733",
 			JitterBufferMS: 60, RTCPEnabled: true,
 		},
-		Audio: Audio{InputGain: 1.0, OutputGain: 1.0, RingbackEnabled: true},
+		Audio: Audio{
+			InputGain: 1.0, OutputGain: 1.0, RingbackEnabled: true,
+			EchoCancel: true, EchoTailMS: 128,
+		},
 		Transfer: Transfer{
 			Mode: "refer", NotifyTimeoutSeconds: 30, HangupAfterSuccess: true,
 		},
@@ -322,6 +333,11 @@ func (c *Config) Validate() error {
 	}
 	if g := c.Audio.OutputGain; g < 0 || g > 4 {
 		bad("audio.output_gain: must be 0.0-4.0, got %v", g)
+	}
+	if c.Audio.EchoCancel {
+		if t := c.Audio.EchoTailMS; t < 16 || t > 500 {
+			bad("audio.echo_tail_ms: must be 16-500, got %d", t)
+		}
 	}
 
 	if c.Transfer.Mode != "refer" {

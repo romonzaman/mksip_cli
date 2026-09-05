@@ -15,6 +15,8 @@ import (
 	"context"
 	"fmt"
 
+	"sipclient/internal/aec"
+	"sipclient/internal/audio"
 	"sipclient/internal/channel"
 	"sipclient/internal/config"
 	"sipclient/internal/history"
@@ -32,6 +34,8 @@ type Controller struct {
 
 	audioDevice string
 	webURL      string
+	router      *audio.Router
+	audio       audio.Device
 }
 
 // New builds a Controller.
@@ -340,6 +344,29 @@ func (c *Controller) SendDTMF(channelID int, digits string) error {
 		return err
 	}
 	return ch.SendDTMF(digits)
+}
+
+// EchoStats reports echo cancellation performance, and false when it is off.
+func (c *Controller) EchoStats() (aec.Stats, bool) {
+	if c.router == nil {
+		return aec.Stats{}, false
+	}
+	return c.router.EchoStats()
+}
+
+// SetRouter attaches the audio router, for echo statistics.
+func (c *Controller) SetRouter(r *audio.Router) { c.router = r }
+
+// SetAudio attaches the open audio device, so device enumeration can reuse its
+// context instead of opening another while a stream is running.
+func (c *Controller) SetAudio(d audio.Device) { c.audio = d }
+
+// ListAudioDevices enumerates the audio endpoints.
+func (c *Controller) ListAudioDevices() ([]audio.DeviceInfo, error) {
+	if c.audio != nil {
+		return audio.ListFrom(c.audio)
+	}
+	return audio.List()
 }
 
 // SetMuted mutes or unmutes the microphone.

@@ -128,6 +128,8 @@ func run() int {
 			FrameSamples: media.FrameSamples(cfg.Media.PtimeMS),
 			InputDevice:  cfg.Audio.InputDevice,
 			OutputDevice: cfg.Audio.OutputDevice,
+			EchoCancel:   cfg.Audio.EchoCancel,
+			EchoTailMS:   cfg.Audio.EchoTailMS,
 			Router:       router,
 		})
 		if err != nil {
@@ -183,6 +185,8 @@ func run() int {
 	// The operations both surfaces share (§4.1 of the MKSIP-1001 plan).
 	controller := control.New(cfg, ua, manager, transferor)
 	controller.SetAudioDevice(device.Description())
+	controller.SetRouter(router)
+	controller.SetAudio(device)
 
 	// 5. Registration runs for the whole session (FR-2.2).
 	go ua.RunRegistration(ctx)

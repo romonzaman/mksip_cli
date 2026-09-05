@@ -4,6 +4,10 @@
 # Runtime logs
 *.log
 
+# Call history, and the temporary files an interrupted write leaves behind
+/call-history.jsonl
+/.history-*
+
 # Kept test output from `make test-keep`
 /testruns/
 

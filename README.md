@@ -189,6 +189,35 @@ Enable it in config instead of by flag with:
 `port` may be `0` to let the OS choose; the chosen URL is printed at startup and shown by
 `status`.
 
+## Speakerphone
+
+Acoustic echo cancellation is on by default, so the far end does not hear themselves when you
+use the laptop speakers.
+
+It needs a **duplex** audio device, so the microphone frame and the speaker frame arrive
+together — that alignment is what makes cancellation tractable. If the chosen microphone and
+speaker cannot pair, the client says so and carries on without cancellation:
+
+```
+audio: echo cancellation unavailable (...); using separate devices, so avoid the speakerphone
+```
+
+`stats` shows how it is doing on a live call:
+
+```
+echo cancellation: converged, 31 dB reduction
+```
+
+Above about 20 dB the echo is inaudible. "adapting" means the filter is still learning the
+room; it converges within a few seconds of the far end speaking.
+
+```jsonc
+"audio": { "echo_cancel": true, "echo_tail_ms": 128 }
+```
+
+`echo_tail_ms` is how long an echo path to model. The default suits a laptop; a large,
+reverberant room may want more, at the cost of slower convergence.
+
 ## Call history
 
 Finished calls are logged, so you can see who rang and call back without retyping a URI:
