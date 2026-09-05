@@ -46,10 +46,13 @@ type Command struct {
 	Code    int    `json:"code,omitempty"`
 	// Transferee and Consult name the legs of an attended transfer. Zero means
 	// "infer it", matching the REPL's bare `xfer`.
-	Transferee int  `json:"transferee,omitempty"`
-	Consult    int  `json:"consult,omitempty"`
-	All        bool `json:"all,omitempty"`
-	On         bool `json:"on,omitempty"`
+	Transferee int `json:"transferee,omitempty"`
+	Consult    int `json:"consult,omitempty"`
+	// Entry names a call-history record to redial, 1-based; 0 means the last
+	// number dialled.
+	Entry int  `json:"entry,omitempty"`
+	All   bool `json:"all,omitempty"`
+	On    bool `json:"on,omitempty"`
 }
 
 // ResultMessage reports the outcome of one command.

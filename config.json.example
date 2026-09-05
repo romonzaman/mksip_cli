@@ -42,6 +42,11 @@
     "notify_timeout_seconds": 30,
     "hangup_after_success": true
   },
+  "history": {
+    "enabled": true,
+    "file": "call-history.jsonl",
+    "max_entries": 200
+  },
   "web": {
     "enabled": false,
     "listen_address": "127.0.0.1",

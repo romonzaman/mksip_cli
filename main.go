@@ -19,6 +19,7 @@ import (
 	"sipclient/internal/cli"
 	"sipclient/internal/config"
 	"sipclient/internal/control"
+	"sipclient/internal/history"
 	"sipclient/internal/media"
 	"sipclient/internal/sipua"
 	"sipclient/internal/transfer"
@@ -145,6 +146,18 @@ func run() int {
 
 	// 4. Channels, SIP stack and transfer logic.
 	manager := channel.NewManager(cfg, logger.Logger, router)
+
+	if cfg.History.Enabled {
+		store, err := history.Open(cfg.History.File, cfg.History.MaxEntries)
+		if err != nil {
+			// History is a convenience; losing it must not stop the phone.
+			logger.Warn("call history unavailable", "error", err)
+		} else {
+			manager.SetHistory(store)
+			logger.Info("call history", "file", cfg.History.File,
+				"entries", store.Len())
+		}
+	}
 
 	ua, err := sipua.New(cfg, logger.Logger, logger.Tracer(), manager.Handlers())
 	if err != nil {

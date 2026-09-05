@@ -17,6 +17,7 @@ import (
 
 	"sipclient/internal/channel"
 	"sipclient/internal/config"
+	"sipclient/internal/history"
 	"sipclient/internal/media"
 	"sipclient/internal/sipua"
 	"sipclient/internal/transfer"
@@ -288,6 +289,48 @@ func (c *Controller) CancelConsult(ctx context.Context, consultID int) (transfer
 		return 0, fmt.Errorf("no other channel to return to")
 	}
 	return transfereeID, c.xfer.CancelConsult(ctx, consultID, transfereeID)
+}
+
+// History returns the call log, or nil when it is disabled.
+func (c *Controller) History() *history.Store { return c.mgr.History() }
+
+// Recent returns the newest call records.
+func (c *Controller) Recent(n int) []history.Record {
+	if h := c.mgr.History(); h != nil {
+		return h.Recent(n)
+	}
+	return nil
+}
+
+// Redial calls an entry from the history. n of 0 means the last number
+// dialled; otherwise it is the nth most recent record, 1-based, so a missed
+// call can be returned as easily as a dialled one.
+func (c *Controller) Redial(ctx context.Context, n, channelID int) (int, string, error) {
+	store := c.mgr.History()
+	if store == nil {
+		return 0, "", fmt.Errorf("call history is disabled")
+	}
+
+	var rec history.Record
+	var ok bool
+	if n <= 0 {
+		rec, ok = store.LastDialled()
+		if !ok {
+			return 0, "", fmt.Errorf("nothing dialled yet to redial")
+		}
+	} else {
+		rec, ok = store.Get(n)
+		if !ok {
+			return 0, "", fmt.Errorf("no history entry %d (have %d)", n, store.Len())
+		}
+	}
+
+	target := rec.DialTarget()
+	if target == "" {
+		return 0, "", fmt.Errorf("history entry %d has no number to call", n)
+	}
+	used, err := c.Dial(ctx, target, channelID)
+	return used, target, err
 }
 
 // SendDTMF sends digits on a channel.

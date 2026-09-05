@@ -79,6 +79,7 @@ function render() {
   renderRegistration();
   renderChannels();
   renderControls();
+  renderRecents();
   renderTitle();
 }
 
@@ -213,6 +214,68 @@ function renderTitle() {
 
 function activeInCall() {
   return state && state.channels.find((c) => c.active && c.inCall);
+}
+
+// Recent calls. A missed call is styled apart because it is the one people
+// open this list to find.
+function renderRecents() {
+  const host = $("recents");
+  const records = state.recent || [];
+  host.innerHTML = "";
+
+  if (records.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No calls yet.";
+    host.appendChild(li);
+    return;
+  }
+
+  records.forEach((r, i) => {
+    const li = document.createElement("li");
+    if (r.disposition === "missed") li.classList.add("missed");
+
+    const dir = document.createElement("span");
+    dir.className = "dir";
+    dir.textContent = r.direction === "in"
+      ? (r.disposition === "missed" ? "\u2717" : "\u2190")
+      : "\u2192";
+    dir.title = `${r.direction === "in" ? "inbound" : "outbound"}, ${r.disposition}`;
+    li.appendChild(dir);
+
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = r.remote || r.remoteUri || "unknown";
+    li.appendChild(who);
+
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = shortWhen(r.startedAt)
+      + (r.talkSeconds ? ` · ${fmtDuration(r.talkSeconds)}` : "");
+    li.appendChild(when);
+
+    const call = document.createElement("button");
+    call.textContent = "Call";
+    // Redial by entry number: the server owns the history, so the browser
+    // never has to send back a number it might have stale.
+    call.onclick = () => send("redial", { entry: i + 1 },
+      `redial ${r.remote || r.remoteUri}`);
+    li.appendChild(call);
+
+    host.appendChild(li);
+  });
+}
+
+// shortWhen renders a timestamp as a time today, or a date before that.
+function shortWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toTimeString().slice(0, 5)
+    : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
 // ----------------------------------------------------------------------- log

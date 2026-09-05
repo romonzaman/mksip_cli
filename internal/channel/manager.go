@@ -10,6 +10,7 @@ import (
 
 	"sipclient/internal/audio"
 	"sipclient/internal/config"
+	"sipclient/internal/history"
 	"sipclient/internal/media"
 	"sipclient/internal/sipua"
 )
@@ -48,6 +49,9 @@ type Manager struct {
 	// notify routes REFER NOTIFYs to the transfer waiting on that dialog.
 	notifyMu sync.Mutex
 	notifies map[string]func(*sip.Request)
+
+	// history records finished calls, when one is configured.
+	history *history.Store
 }
 
 // subscriber is one consumer of the event stream.
@@ -75,13 +79,29 @@ func NewManager(cfg config.Config, logger *slog.Logger, router *audio.Router) *M
 	return m
 }
 
+// SetHistory attaches the call log. Must be called before SetUA.
+func (m *Manager) SetHistory(store *history.Store) { m.history = store }
+
+// History returns the call log, or nil when none is configured.
+func (m *Manager) History() *history.Store { return m.history }
+
+// recordCall stores a finished call, ignoring it when history is off.
+func (m *Manager) recordCall(r history.Record) {
+	if m.history == nil {
+		return
+	}
+	if err := m.history.Add(r); err != nil {
+		m.log.Warn("could not record the call in history", "error", err)
+	}
+}
+
 // SetUA wires the SIP stack and creates the channels.
 func (m *Manager) SetUA(ua *sipua.UA) {
 	m.ua = ua
 	for id := 1; id <= ChannelCount; id++ {
 		leg := m.router.AddLeg(id)
 		m.channels = append(m.channels, New(id, m.cfg, ua, m.pool, leg, m.log,
-			m.emit, m.stateChanged))
+			m.emit, m.stateChanged, m.recordCall))
 	}
 	m.applyActive()
 }
