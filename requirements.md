@@ -183,6 +183,8 @@ use`. TCP dials from an ephemeral port and reuses that connection for the dialog
 | `output_device` | no | system default | As above. |
 | `input_gain` / `output_gain` | no | `1.0` | Linear multiplier, 0.0–4.0, applied with clipping protection. |
 | `ringback_enabled` | no | `true` | Generate local ringback tone when the PBX sends `180` without early media. |
+| `echo_cancel` | no | `true` | Cancel acoustic echo, so the speakerphone is usable. Requires a duplex device; falls back with a warning when one cannot be opened. |
+| `echo_tail_ms` | no | `128` | How long an echo path to model, 16–500. Longer covers a more reverberant room but converges more slowly. |
 
 **`transfer`**
 
@@ -466,6 +468,33 @@ call control by RFC 5589. The PBX performs the actual bridging; this client leav
 - **FR-8.6** — Audio device capture and playback run at 8 kHz mono; the audio backend's
   internal resampler handles conversion from the hardware rate. Device buffer size SHOULD
   match `ptime_ms`.
+- **FR-8.11** — Acoustic echo MUST be cancelled, or a speakerphone is unusable: the far end
+  hears itself, and at enough gain the loop howls.
+
+  The client MUST open a **duplex** device when echo cancellation is enabled, so each callback
+  carries the microphone frame and the speaker frame that accompanies it. That alignment is
+  what removes the need to estimate delay or compensate clock drift between two independent
+  devices, and it is the reason a straightforward time-domain filter suffices here.
+
+  Cancellation MUST comprise three stages: an adaptive filter that learns and subtracts the
+  echo path; a double-talk detector that freezes adaptation while the near-end talker speaks,
+  since adapting to the user's own voice makes the filter diverge; and residual suppression
+  for what the linear filter cannot remove.
+
+  **The near-end talker MUST never be suppressed.** An echo canceller that quietens the user's
+  own voice sounds half-duplex, which is worse to talk through than the echo it removed.
+
+  Duplex may be unavailable — the chosen microphone and speaker may not pair on the platform.
+  The client MUST then say so plainly and continue with separate devices and no cancellation,
+  rather than failing to start: a phone that works without a usable speakerphone beats a phone
+  that does not run.
+
+  Two notes for implementers. The double-talk detector cannot rely on the echo being quieter
+  than the reference: a speakerphone at volume produces echo only a decibel or two down, and a
+  detector assuming otherwise fires constantly and blocks the very adaptation needed to
+  converge. Once converged, compare the residual against its own established floor instead.
+  And the filter MUST tolerate a loud reference without diverging, which is what normalising
+  the adaptation step by reference power achieves.
 - **FR-8.7** — Mic audio is routed only to the active channel. Held channels transmit nothing
   (or comfort noise) and their inbound audio is dropped rather than mixed.
 - **FR-8.8** — Media loss MUST be detected: if no inbound RTP arrives for 10 seconds on a
@@ -632,6 +661,7 @@ Flags: `-config <path>`, `-no-audio` (signalling only, for headless runs), `-wai
 
 - D1 — TLS signalling and SRTP (SDES) media.
 - D2 — Opus and G.722 wideband codecs.
+- ~~AEC~~ — done, see FR-8.11.
 - D3 — `transfer.mode = "bridge"`: local B2BUA media bridging for PBXs that reject `REFER`.
 - D4 — More than two channels (`channels.count`).
 - D5 — Call recording to WAV per leg.
@@ -701,6 +731,11 @@ Additional failure paths covered beyond the original list:
 | FR-9.11 | History outlives the process | `TestHistorySurvivesRestart` |
 | FR-9.11 | Disabled writes nothing and says so | `TestHistoryDisabled` |
 | FR-9.11 | Cap, ordering, atomic write, 0600 mode, corrupt-line tolerance | `internal/history` tests |
+| FR-8.11 | Echo is cancelled: ≥20 dB reduction against a synthetic echo path | `TestCancelsEcho` (measures 50+ dB) |
+| FR-8.11 | The near-end talker is never suppressed, alone or during double-talk | `TestNearEndPassesThrough`, `TestDoubleTalkPreservesNearEnd` |
+| FR-8.11 | The filter survives silence and a clipping-loud reference | `TestSilenceIsStable`, `TestLoudReferenceDoesNotDiverge` |
+| FR-8.11 | A duplex device really opens, or the fallback is announced | `TestEchoCancellationOnRealDevice` |
+| FR-8.11 | Disabled changes nothing | `TestEchoCancellationDisabled` |
 | FR-2.8 | Inbound call over TCP, by connection reuse and by a fresh connection to our Contact | `TestInboundCallOverTCPConnectionReuse`, `TestInboundCallOverTCPViaContact` |
 | §3.3 `advertise_address` | SDP carries the media address while SIP keeps the signalling one | `TestMediaAdvertiseAddress`, `TestMediaAddressDefaultsToSignalling` |
 | FR-2.11 | Inbound calls, transfers and media all work with an OS-assigned SIP port | every scenario test (the harness leaves `local_sip_port` at `0`) |

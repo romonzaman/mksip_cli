@@ -5,6 +5,8 @@ package audio
 
 import (
 	"encoding/binary"
+
+	"sipclient/internal/aec"
 	"sync"
 	"sync/atomic"
 )
@@ -116,6 +118,13 @@ type Router struct {
 	frameBytes   int
 	bufferFrames int
 	scratch      []byte // reused inside the playback callback only
+
+	// echo removes the far end's voice from the microphone when the device is
+	// running in duplex. Nil when echo cancellation is off or unavailable.
+	echo *aec.Canceller
+	// echoScratch holds the cancelled microphone frame; reused so the audio
+	// callback never allocates.
+	echoScratch []byte
 }
 
 // NewRouter builds a router whose per-leg buffers hold bufferFrames frames.
@@ -142,6 +151,52 @@ func (r *Router) AddLeg(id int) *Leg {
 	r.legs = append(r.legs, l)
 	r.mu.Unlock()
 	return l
+}
+
+// SetEchoCanceller installs the echo canceller. It must be called before the
+// device starts, and only when the device runs in duplex: without a reference
+// frame aligned to the capture there is nothing to cancel against.
+func (r *Router) SetEchoCanceller(c *aec.Canceller) {
+	r.mu.Lock()
+	r.echo = c
+	r.echoScratch = make([]byte, r.frameBytes*r.bufferFrames)
+	r.mu.Unlock()
+}
+
+// EchoStats reports echo cancellation performance, and false when it is off.
+func (r *Router) EchoStats() (aec.Stats, bool) {
+	r.mu.RLock()
+	c := r.echo
+	r.mu.RUnlock()
+	if c == nil {
+		return aec.Stats{}, false
+	}
+	return c.Stats(), true
+}
+
+// ProcessDuplex is the duplex device callback: it fills the speaker buffer and
+// then removes that same audio from the microphone frame.
+//
+// The speaker buffer is filled first so it can serve as the echo reference.
+// The frame the microphone just captured cannot contain audio that has not
+// been played yet, so the filter simply learns a delay of at least one frame --
+// it is given the history and works out the real path itself.
+func (r *Router) ProcessDuplex(out, in []byte) {
+	r.ProcessPlayback(out)
+
+	r.mu.RLock()
+	echo := r.echo
+	scratch := r.echoScratch
+	r.mu.RUnlock()
+
+	if echo == nil || len(in) == 0 || len(in) != len(out) || len(scratch) < len(in) {
+		r.ProcessCapture(in)
+		return
+	}
+
+	cleaned := scratch[:len(in)]
+	echo.Process(cleaned, in, out)
+	r.ProcessCapture(cleaned)
 }
 
 // SetMuted mutes the microphone globally (FR-9.3 mute).

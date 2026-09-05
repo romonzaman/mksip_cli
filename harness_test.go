@@ -113,6 +113,9 @@ func writeConfig(t *testing.T, dir string, pbx *testpbx.PBX, mutate func(*config
 	cfg.Network.LocalSIPPort = 0 // ephemeral, so tests can run in parallel
 	// RTP ports are left at the default (OS-assigned), so parallel scenarios
 	// cannot collide on a range. Tests that need a pinned range set one.
+	// Keep the call log with the rest of the run's output; the default is a
+	// relative path, which would otherwise litter the repository root.
+	cfg.History.File = filepath.Join(dir, "call-history.jsonl")
 	cfg.Logging.File = filepath.Join(dir, "app.log")
 	cfg.Logging.SIPTraceFile = filepath.Join(dir, "sip.log")
 	cfg.Logging.Level = "debug"

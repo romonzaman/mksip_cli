@@ -112,6 +112,10 @@ func Open(path string, max int) (*Store, error) {
 		return nil, fmt.Errorf("history: read %s: %w", path, err)
 	}
 
+	// A client killed mid-write leaves its temporary file behind. Sweep the
+	// stale ones so they cannot accumulate in the working directory forever.
+	cleanStaleTemps(filepath.Dir(path))
+
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -130,6 +134,34 @@ func Open(path string, max int) (*Store, error) {
 	}
 	s.trim()
 	return s, nil
+}
+
+// tempPrefix names our atomic-write temporary files.
+const tempPrefix = ".history-"
+
+// staleTempAge is how old a temporary file must be before it is assumed
+// abandoned. Long enough that a second client writing right now is never
+// mistaken for a corpse.
+const staleTempAge = 5 * time.Minute
+
+// cleanStaleTemps removes temporary files left by a client that was killed
+// before it could rename one into place.
+func cleanStaleTemps(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleTempAge)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), tempPrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
 }
 
 // Add records a call and persists the history.
@@ -226,7 +258,7 @@ func (s *Store) trim() {
 // mid-write cannot leave truncated history behind.
 func writeAtomic(path string, records []Record) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".history-*")
+	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
 		return fmt.Errorf("history: create temp in %s: %w", dir, err)
 	}
