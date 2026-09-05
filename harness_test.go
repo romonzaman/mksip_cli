@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,6 +143,56 @@ func splitAddr(t *testing.T, addr string) (string, int) {
 		t.Fatalf("bad port in %q", addr)
 	}
 	return host, port
+}
+
+// startClientWithWeb runs the client with the browser UI enabled on a free
+// port, holding it open until the returned stop function is called. It returns
+// the UI's base URL.
+func startClientWithWeb(t *testing.T, configPath string) (string, func()) {
+	t.Helper()
+
+	port := freeTCPPort(t)
+	cmd := exec.Command(clientBinary(t), "-config", configPath, "-no-audio",
+		"-wait-register", "8s", "-web", "-web-port", fmt.Sprint(port))
+	// Keep it alive; the test drives it over HTTP, not stdin.
+	cmd.Stdin = strings.NewReader("sleep 600000\nquit\n")
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+
+	stop := func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}
+	t.Cleanup(stop)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(base + "/healthz")
+		if err == nil {
+			resp.Body.Close()
+			return base, stop
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("web UI never came up on %s\noutput:\n%s", base, out.String())
+	return "", stop
+}
+
+// freeTCPPort reserves a port number by binding and releasing it.
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }
 
 // runClient feeds the script to the client on stdin and returns its output and

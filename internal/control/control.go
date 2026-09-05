@@ -30,6 +30,7 @@ type Controller struct {
 	xfer *transfer.Transferor
 
 	audioDevice string
+	webURL      string
 }
 
 // New builds a Controller.

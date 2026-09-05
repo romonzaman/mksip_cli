@@ -15,6 +15,26 @@ const (
 	EventError
 )
 
+// String is the stable wire name for this kind, used by the web protocol so a
+// surface can style an incoming call differently from an ordinary notice.
+func (k EventKind) String() string {
+	switch k {
+	case EventIncoming:
+		return "incoming"
+	case EventStateChange:
+		return "state"
+	case EventTransfer:
+		return "transfer"
+	case EventDTMF:
+		return "dtmf"
+	case EventWarning:
+		return "warning"
+	case EventError:
+		return "error"
+	}
+	return "info"
+}
+
 // Event is an asynchronous notification printed above the prompt.
 type Event struct {
 	Kind    EventKind

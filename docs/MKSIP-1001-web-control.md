@@ -2,7 +2,7 @@
 
 **Issue:** [romonzaman/mksip_cli#1](https://github.com/romonzaman/mksip_cli/issues/1)
 **Branch:** `MKSIP-1001-web-control`
-**Status:** Plan — not yet implemented
+**Status:** Implemented — tasks 1–10 complete, see §10
 
 ---
 
@@ -302,18 +302,18 @@ registrar and UAS the scenario suite already drives.
 Ordered so that each step is independently verifiable, and the risky refactor comes first while
 the test suite is the only consumer.
 
-| # | Task | Deliverable | Covers |
-|---|---|---|---|
-| 1 | Event fan-out in `channel.Manager` | `Subscribe`/`AddChangeListener`, REPL migrated, unit tests for two subscribers and a slow one | prerequisite |
-| 2 | Extract `internal/control` | Controller with the operations; `internal/cli` reduced to parsing and printing; whole suite still green | prerequisite |
-| 3 | Web server skeleton | `internal/web`, config section, `-web` flag, `/healthz`, `/api/state`, startup URL log | — |
-| 4 | WebSocket hub | `/ws`, state pushes, event relay, command dispatch with `result` frames; handler tests | 1 |
-| 5 | UI: channel status | Embedded page rendering both channels live | **issue #1** |
-| 6 | UI: dialpad | Dial, and DTMF during a call | **issue #2** |
-| 7 | UI: hangup, answer, reject | Inbound call takeover in the UI | **issue #4, #5** |
-| 8 | UI: transfer | Attended, blind, cancel consult, hold/swap/mute | **issue #3** |
-| 9 | End-to-end test | Full warm transfer driven over the WebSocket against `testpbx` | all |
-| 10 | Docs | README section, `requirements.md` §9 companion for the web surface, `config.json.example` | — |
+| # | Task | Deliverable | Covers | Done |
+|---|---|---|---|---|
+| 1 | Event fan-out in `channel.Manager` | `Subscribe`/`AddChangeListener`, REPL migrated, unit tests for two subscribers and a slow one | prerequisite | ✅ |
+| 2 | Extract `internal/control` | Controller with the operations; `internal/cli` reduced to parsing and printing; whole suite still green | prerequisite | ✅ |
+| 3 | Web server skeleton | `internal/web`, config section, `-web` flag, `/healthz`, `/api/state`, startup URL log | — | ✅ |
+| 4 | WebSocket hub | `/ws`, state pushes, event relay, command dispatch with `result` frames; handler tests | 1 | ✅ |
+| 5 | UI: channel status | Embedded page rendering both channels live | **issue #1** | ✅ |
+| 6 | UI: dialpad | Dial, and DTMF during a call | **issue #2** | ✅ |
+| 7 | UI: hangup, answer, reject | Inbound call takeover in the UI | **issue #4, #5** | ✅ |
+| 8 | UI: transfer | Attended, blind, cancel consult, hold/swap/mute | **issue #3** | ✅ |
+| 9 | End-to-end test | Full warm transfer driven over the WebSocket against `testpbx` | all | ✅ |
+| 10 | Docs | README section, `requirements.md` §9 companion for the web surface, `config.json.example` | — | ✅ |
 
 Tasks 1 and 2 touch existing code; 3–10 are additive.
 
@@ -321,20 +321,20 @@ Tasks 1 and 2 touch existing code; 3–10 are additive.
 
 ## 11. Acceptance criteria
 
-| # | Scenario | Expected |
-|---|---|---|
-| W1 | Start with `web.enabled` false | No listener, no behaviour change. Existing configs unaffected. |
-| W2 | Start with `-web` | URL logged and shown by `status`; page loads; first `state` frame matches `status`. |
-| W3 | Terminal and browser open together | An action in one is reflected in the other within one state push. Neither steals the other's events. |
-| W4 | Dial from the dialpad | Channel goes CALLING → CONNECTED in the browser; the REPL agrees. |
-| W5 | Inbound call | Appears in the browser without interaction; Answer connects; Reject declines with 603. |
-| W6 | DTMF from the dialpad during a call | Digits arrive at the PBX exactly once each (the `TestDTMFDigitsArriveOnce` bar). |
-| W7 | Warm transfer from the browser | Hold, consult, transfer; PBX sees the correct `REFER` with `Replaces`; both channels clear. |
-| W8 | Invalid action | `result` carries the same message the REPL gives, e.g. `channel 2 is IDLE, cannot hold`. |
-| W9 | Server killed / socket dropped | Page greys out, says disconnected, reconnects and recovers full state. |
-| W10 | Non-loopback `listen_address` | Startup fails with a message naming the field. |
-| W11 | Cross-origin WS upgrade | Rejected. |
-| W12 | `make check` | Clean, including `-race` with the client instrumented. |
+| # | Scenario | Expected | Verified by |
+|---|---|---|---|
+| W1 | Start with `web.enabled` false | No listener, no behaviour change. Existing configs unaffected. | `TestWebUIDisabledByDefault` |
+| W2 | Start with `-web` | URL logged and shown by `status`; page loads; first `state` frame matches `status`. | `TestWebUIServesAndReportsState` |
+| W3 | Terminal and browser open together | An action in one is reflected in the other within one state push. Neither steals the other's events. | manual; both surfaces share `internal/control` and each has its own event subscription |
+| W4 | Dial from the dialpad | Channel goes CALLING → CONNECTED in the browser; the REPL agrees. | `TestWebUICallLifecycle` |
+| W5 | Inbound call | Appears in the browser without interaction; Answer connects; Reject declines with 603. | `TestWebUIInboundCall` |
+| W6 | DTMF from the dialpad during a call | Digits arrive at the PBX exactly once each (the `TestDTMFDigitsArriveOnce` bar). | covered at the RTP level by `TestDTMFDigitsArriveOnce`; the browser path uses the same controller call |
+| W7 | Warm transfer from the browser | Hold, consult, transfer; PBX sees the correct `REFER` with `Replaces`; both channels clear. | `TestWebUIWarmTransfer` |
+| W8 | Invalid action | `result` carries the same message the REPL gives, e.g. `channel 2 is IDLE, cannot hold`. | `TestWebUICallLifecycle` |
+| W9 | Server killed / socket dropped | Page greys out, says disconnected, reconnects and recovers full state. | manual; the client reconnects with backoff and the first frame restores full state |
+| W10 | Non-loopback `listen_address` | Startup fails with a message naming the field. | `TestWebConfigRejectsNonLoopback` |
+| W11 | Cross-origin WS upgrade | Rejected. | `TestWebUIRejectsCrossOrigin` |
+| W12 | `make check` | Clean, including `-race` with the client instrumented. | `make check` |
 
 ---
 
@@ -356,5 +356,34 @@ Tasks 1 and 2 touch existing code; 3–10 are additive.
   Deferring unless asked.
 - **Q2** — Should the dialpad offer a recent-calls list? Needs call history, which does not
   exist today. Out of scope unless asked.
-- **Q3** — Port `8080` is a common conflict. Is a less popular default (e.g. `8722`) preferred,
-  given `0` is available for "pick one"?
+- **Q3** — Port `8080` is a common conflict. Kept as the default for now since `0` is available
+  for "pick one" and `-web-port` overrides it, but say the word and it changes.
+
+
+---
+
+## 14. As built
+
+Everything above was implemented on this branch. Notes on what differed from the plan:
+
+- **Event fan-out surfaced a latent bug.** The REPL used to subscribe inside its pump
+  goroutine. With one shared buffered channel that was harmless, because events emitted before
+  the goroutine ran were buffered; with per-subscriber channels they were dropped. The existing
+  inbound tests caught it — an `INVITE` can arrive before the REPL goroutine is scheduled. The
+  CLI now subscribes at construction.
+
+- **A browser connecting mid-ring is correct by construction.** The first frame on a new socket
+  is a full snapshot, so a page opened while a call is already ringing renders it immediately.
+  `TestWebUIInboundCall` initially failed because the *test* discarded that first frame, which
+  is worth remembering when writing further tests against this protocol.
+
+- **Commands run on their own goroutine.** Dialling and transferring block on the network, and
+  a stalled command must not stop the browser sending a hangup.
+
+- **A browser that falls behind is disconnected** rather than queued for indefinitely. It
+  reconnects and the first frame restores the truth, which is cheaper and simpler than trying
+  to keep a slow client in sync.
+
+Not done, deliberately: Q1 (debug/trace in the browser) and Q2 (recent calls) remain open, and
+the UI has no automated test — its logic is state rendering, and the protocol underneath it is
+what carries the risk.

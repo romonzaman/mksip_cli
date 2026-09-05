@@ -40,6 +40,11 @@
     "notify_timeout_seconds": 30,
     "hangup_after_success": true
   },
+  "web": {
+    "enabled": false,
+    "listen_address": "127.0.0.1",
+    "port": 8080
+  },
   "logging": {
     "level": "info",
     "file": "sipclient.log",

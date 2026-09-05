@@ -29,6 +29,11 @@ build:
 run: build
 	./$(BINARY) -config $(CONFIG)
 
+## run-web: build then start with the browser control UI on loopback
+.PHONY: run-web
+run-web: build
+	./$(BINARY) -config $(CONFIG) -web
+
 ## run-no-audio: start without opening an audio device (signalling only)
 .PHONY: run-no-audio
 run-no-audio: build

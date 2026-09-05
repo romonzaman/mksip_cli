@@ -22,6 +22,7 @@ import (
 	"sipclient/internal/media"
 	"sipclient/internal/sipua"
 	"sipclient/internal/transfer"
+	"sipclient/internal/web"
 )
 
 // Exit codes per FR-9.9.
@@ -45,6 +46,10 @@ func run() int {
 		"run without opening an audio device (signalling only)")
 	waitReg := flag.Duration("wait-register", 10*time.Second,
 		"how long to wait for the first registration before giving up")
+	webEnable := flag.Bool("web", false,
+		"serve the browser control UI on loopback")
+	webPort := flag.Int("web-port", 0,
+		"port for the browser control UI (implies -web; 0 uses the configured port)")
 	flag.Parse()
 
 	if *showVersion {
@@ -88,6 +93,20 @@ func run() int {
 	if insecure {
 		logger.Warn("config file is group- or world-readable and holds a password",
 			"path", *configPath, "fix", fmt.Sprintf("chmod 600 %s", *configPath))
+	}
+
+	// Flags override the config for a quick run without editing it.
+	if *webEnable || *webPort != 0 {
+		cfg.Web.Enabled = true
+	}
+	if *webPort != 0 {
+		cfg.Web.Port = *webPort
+	}
+	if cfg.Web.Enabled {
+		if err := cfg.Validate(); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return exitConfig
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -155,7 +174,25 @@ func run() int {
 	// 5. Registration runs for the whole session (FR-2.2).
 	go ua.RunRegistration(ctx)
 
-	// 6. CLI.
+	// 6. Browser control surface, when enabled (MKSIP-1001).
+	var webServer *web.Server
+	if cfg.Web.Enabled {
+		webServer = web.New(cfg.Web, controller, logger.Logger)
+		url, err := webServer.Start(ctx, cfg.WebAddr())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			logger.Error("web UI failed to start", "error", err)
+			return exitConfig
+		}
+		defer webServer.Close()
+
+		// Printed as well as logged: with port 0 there is no guessing it.
+		fmt.Printf("web control UI: %s\n", url)
+		logger.Info("web control UI listening", "url", url)
+		controller.SetWebURL(url)
+	}
+
+	// 7. CLI.
 	shell := cli.New(cli.Options{
 		Config:     cfg,
 		Controller: controller,
@@ -179,7 +216,7 @@ func run() int {
 
 	runErr := shell.Run(ctx)
 
-	// 7. Graceful shutdown: hang up, de-register, stop (FR-9.7, NFR-5).
+	// 8. Graceful shutdown: hang up, de-register, stop (FR-9.7, NFR-5).
 	shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 

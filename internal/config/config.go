@@ -4,7 +4,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -17,6 +19,19 @@ type Config struct {
 	Audio    Audio    `json:"audio"`
 	Transfer Transfer `json:"transfer"`
 	Logging  Logging  `json:"logging"`
+	Web      Web      `json:"web"`
+}
+
+// Web configures the browser control surface (MKSIP-1001). Absent means off,
+// so existing configurations behave exactly as before.
+type Web struct {
+	Enabled bool `json:"enabled"`
+	// ListenAddress must be a loopback address. Anyone who can reach this
+	// server can place and transfer calls on your extension, so exposing it to
+	// a network needs authentication, which does not exist yet.
+	ListenAddress string `json:"listen_address"`
+	// Port 0 picks a free one, as the SIP and RTP ports do.
+	Port int `json:"port"`
 }
 
 type SIP struct {
@@ -115,6 +130,11 @@ func Default() Config {
 		Audio: Audio{InputGain: 1.0, OutputGain: 1.0, RingbackEnabled: true},
 		Transfer: Transfer{
 			Mode: "refer", NotifyTimeoutSeconds: 30, HangupAfterSuccess: true,
+		},
+		Web: Web{
+			Enabled:       false,
+			ListenAddress: "127.0.0.1",
+			Port:          8080,
 		},
 		Logging: Logging{
 			Level: "info", File: "sipclient.log",
@@ -272,6 +292,17 @@ func (c *Config) Validate() error {
 		bad("transfer.notify_timeout_seconds: must be 1-300, got %d", t)
 	}
 
+	if c.Web.Enabled {
+		if c.Web.Port < 0 || c.Web.Port > 65535 {
+			bad("web.port: must be 0-65535, got %d", c.Web.Port)
+		}
+		if !isLoopback(c.Web.ListenAddress) {
+			bad("web.listen_address: must be a loopback address (127.0.0.1, ::1 or "+
+				"localhost), got %q -- the web UI can place calls on your extension "+
+				"and has no authentication", c.Web.ListenAddress)
+		}
+	}
+
 	for path, lvl := range map[string]string{
 		"logging.level":         c.Logging.Level,
 		"logging.console_level": c.Logging.ConsoleLevel,
@@ -287,6 +318,25 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid config:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// isLoopback reports whether an address is safe to bind the unauthenticated
+// web UI to.
+func isLoopback(host string) bool {
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// WebAddr is the host:port the web UI binds to.
+func (c *Config) WebAddr() string {
+	host := c.Web.ListenAddress
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(c.Web.Port))
 }
 
 // EphemeralRTPPorts reports whether the OS assigns RTP ports per call.

@@ -131,6 +131,7 @@ leaves everything alone.
 | `register` / `unregister` | Force re-registration / de-register |
 | `devices` / `mute` / `unmute` | Audio device list and microphone control |
 | `debug [on\|off]` | Show SIP packets in the terminal (no argument toggles) |
+| — | The same actions are available in the browser with `-web` |
 | `config` | Effective configuration, password redacted |
 | `sleep <ms>` / `wait <ch> <state> [ms]` | For scripted runs |
 | `help [cmd]` / `quit` | Usage / exit |
@@ -157,6 +158,34 @@ EOF
 
 Exit codes: `0` clean, `1` config/startup error, `2` registration failure, `3` a scripted
 command failed.
+
+## Browser control
+
+The client can also be driven from a browser ([MKSIP-1001](docs/MKSIP-1001-web-control.md)):
+
+```sh
+make run-web            # or: ./sipclient -web
+web control UI: http://127.0.0.1:8080
+```
+
+Channel status, a dialpad, transfer, hangup and answer/reject, all live — state is pushed over
+a WebSocket, so the page never polls and an incoming call appears without interaction.
+
+**The browser controls the client; it does not carry the audio.** Microphone and speakers stay
+on the machine running the client, so a warm transfer driven from the browser still needs you
+at that machine to talk to the party you are consulting. The page says so.
+
+It binds **loopback only and has no authentication**, because anyone who can reach it can place
+and transfer calls on your extension. A non-loopback `web.listen_address` is refused at startup.
+
+Enable it in config instead of by flag with:
+
+```jsonc
+"web": { "enabled": true, "listen_address": "127.0.0.1", "port": 8080 }
+```
+
+`port` may be `0` to let the OS choose; the chosen URL is printed at startup and shown by
+`status`.
 
 ## Seeing SIP packets
 

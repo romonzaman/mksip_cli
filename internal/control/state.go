@@ -104,6 +104,12 @@ func (c *Controller) Snapshot() State {
 	return s
 }
 
+// SetWebURL records where the browser UI is served, for the status command.
+func (c *Controller) SetWebURL(url string) { c.webURL = url }
+
+// WebURL is where the browser UI is served, empty when it is not running.
+func (c *Controller) WebURL() string { return c.webURL }
+
 // SetAudioDevice records the device description for Snapshot.
 func (c *Controller) SetAudioDevice(desc string) { c.audioDevice = desc }
 

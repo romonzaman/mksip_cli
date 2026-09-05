@@ -318,6 +318,9 @@ func (c *CLI) cmdStatus(_ context.Context, _ []string) error {
 	c.printf("registration: %s", describeRegistration(reg))
 	c.printf("audio: %s%s", c.deviceDesc, mutedSuffix(c.ctl.Muted()))
 	c.printf("debug: %s", c.debugState())
+	if url := c.ctl.WebURL(); url != "" {
+		c.printf("web:   %s", url)
+	}
 
 	for _, ch := range c.mgr.Channels() {
 		s := ch.Snapshot()
