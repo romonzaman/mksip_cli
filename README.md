@@ -130,6 +130,8 @@ leaves everything alone.
 | `status` / `stats [ch]` | Call state / RTP statistics |
 | `register` / `unregister` | Force re-registration / de-register |
 | `devices` / `mute` / `unmute` | Audio device list and microphone control |
+| `history [count]` | Show recent calls |
+| `redial [entry] [ch]` | Call the last number dialled, or history entry N |
 | `debug [on\|off]` | Show SIP packets in the terminal (no argument toggles) |
 | — | The same actions are available in the browser with `-web` |
 | `config` | Effective configuration, password redacted |
@@ -186,6 +188,36 @@ Enable it in config instead of by flag with:
 
 `port` may be `0` to let the OS choose; the chosen URL is printed at startup and shown by
 `status`.
+
+## Call history
+
+Finished calls are logged, so you can see who rang and call back without retyping a URI:
+
+```
+sip> history
+   1  05 Sep 16:23  -> 2001                     answered  01:14
+   2  05 Sep 16:19  <- Test Caller <15551234>   missed
+   3  05 Sep 16:02  -> 2002                     failed              (486 Busy Here)
+  redial <n> calls one of these back
+
+sip> redial          # the last number dialled
+sip> redial 2        # return the missed call
+```
+
+The browser shows the same list, with missed calls picked out and a Call button on each.
+
+A missed call is distinguished from one you declined and from one that failed to connect —
+they look identical in the state machine but mean opposite things when you are scanning the
+log. Failures keep the SIP code that explains them.
+
+History is kept in `call-history.jsonl` (mode 600 — it records who you called), capped at
+`max_entries`, and survives restarts:
+
+```jsonc
+"history": { "enabled": true, "file": "call-history.jsonl", "max_entries": 200 }
+```
+
+Set `enabled` to `false` to keep no record at all.
 
 ## Long calls
 

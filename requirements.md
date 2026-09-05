@@ -509,6 +509,8 @@ call control by RFC 5589. The PBX performs the actual bridging; this client leav
 | `register` / `unregister` | Force re-registration / de-register. |
 | `devices` | List audio input/output devices. |
 | `mute` / `unmute` | Mute the microphone on the active channel. |
+| `history [count]` | Show recent calls. |
+| `redial [entry] [ch]` | Call the last number dialled, or history entry N. |
 | `debug [on\|off]` | Echo SIP packets to the terminal; no argument toggles. |
 | `config` | Show effective config, password redacted. |
 | `help [cmd]` | Usage. |
@@ -520,6 +522,21 @@ call control by RFC 5589. The PBX performs the actual bridging; this client leav
   including the caller's URI and display name and the channel it landed on.
 - **FR-9.6** — Every command MUST validate its arguments and its channel's state, and refuse
   with a specific reason (`channel 2 is IDLE, nothing to hold`) rather than failing silently.
+- **FR-9.11** — Finished calls MUST be recorded, so the operator can see who rang and redial
+  without retyping a URI.
+
+  The disposition MUST distinguish **answered**, **missed** (rang here, never answered),
+  **rejected** (declined here), **cancelled** (we gave up before the far end answered) and
+  **failed** (could not be set up, keeping the SIP code). Missed and rejected look identical
+  in the state machine and mean opposite things to the person reading the log.
+
+  Records MUST survive a restart, MUST be capped so the file cannot grow without bound, and
+  the file MUST be owner-only since it records who was called. A corrupt record MUST be
+  skipped rather than stopping startup. `history.enabled: false` disables the feature.
+
+  Note for implementers: a call can be torn down by three paths — `reset`, the dialog watcher,
+  and the failed-dial path — and all three must record, or entries silently go missing
+  depending on which won the race.
 - **FR-9.10** — `debug [on|off]` MUST echo SIP messages to the terminal, printed above the
   prompt like any other output and with credentials redacted as in the trace file. It MUST be
   independent of `logging.sip_trace`: turning terminal echo off never stops the file record,
@@ -678,6 +695,12 @@ Additional failure paths covered beyond the original list:
 | FR-4.11 | `422 Session Interval Too Small` is retried, not fatal | `TestSessionIntervalTooSmallRetries` |
 | FR-4.11 | Disabled by config, the client offers and sends nothing | `TestSessionTimerDisabled` |
 | FR-4.11 | Header parsing, refresher defaulting and 422 handling | `internal/sipua` session timer tests |
+| FR-9.11 | An answered call is logged with talk time, codec and a dialable target | `TestHistoryRecordsAnsweredCall` |
+| FR-9.11 | Rejected is distinguished from missed | `TestHistoryDistinguishesMissedFromRejected` |
+| FR-9.11 | `redial` calls the last number with nothing typed | `TestRedialCallsTheLastNumber` |
+| FR-9.11 | History outlives the process | `TestHistorySurvivesRestart` |
+| FR-9.11 | Disabled writes nothing and says so | `TestHistoryDisabled` |
+| FR-9.11 | Cap, ordering, atomic write, 0600 mode, corrupt-line tolerance | `internal/history` tests |
 | FR-2.8 | Inbound call over TCP, by connection reuse and by a fresh connection to our Contact | `TestInboundCallOverTCPConnectionReuse`, `TestInboundCallOverTCPViaContact` |
 | §3.3 `advertise_address` | SDP carries the media address while SIP keeps the signalling one | `TestMediaAdvertiseAddress`, `TestMediaAddressDefaultsToSignalling` |
 | FR-2.11 | Inbound calls, transfers and media all work with an OS-assigned SIP port | every scenario test (the harness leaves `local_sip_port` at `0`) |

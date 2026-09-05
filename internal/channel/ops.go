@@ -8,6 +8,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
+	"sipclient/internal/history"
 	"sipclient/internal/media"
 	"sipclient/internal/sdputil"
 	"sipclient/internal/sipua"
@@ -37,6 +38,8 @@ func (c *Channel) Incoming(ctx context.Context, dlg *sipgo.DialogServerSession) 
 		if from.DisplayName != "" {
 			c.remote = fmt.Sprintf("%s <%s>", from.DisplayName, uriShort(from.Address))
 		}
+		addr := from.Address
+		c.remoteURI = (&addr).String()
 	}
 
 	c.decided = make(chan struct{})
@@ -198,6 +201,7 @@ func (c *Channel) Reject(ctx context.Context, code int, reason string) error {
 	dlg := c.serverDlg
 	c.mu.Unlock()
 
+	c.noteDisposition(history.Rejected, code, reason)
 	if err := dlg.Respond(code, reason, nil); err != nil {
 		return fmt.Errorf("send %d: %w", code, err)
 	}
@@ -256,6 +260,12 @@ func (c *Channel) reset(why string) {
 		return
 	}
 	c.signalDecidedLocked()
+
+	// Record the finished call before the state that describes it is cleared.
+	if rec, ok := c.finishRecord(); ok {
+		defer c.recordCall(rec)
+	}
+
 	c.stopMedia()
 	dlg := c.dialog
 	c.dialog, c.clientDlg, c.serverDlg = nil, nil, nil

@@ -11,6 +11,7 @@ import (
 
 	"sipclient/internal/audio"
 	"sipclient/internal/channel"
+	"sipclient/internal/history"
 )
 
 // command is one REPL verb.
@@ -114,6 +115,16 @@ func (c *CLI) buildCommands() {
 			name: "unmute", usage: "unmute",
 			summary: "unmute the microphone",
 			run:     (*CLI).cmdUnmute,
+		},
+		{
+			name: "history", usage: "history [count]",
+			summary: "show recent calls",
+			run:     (*CLI).cmdHistory,
+		},
+		{
+			name: "redial", usage: "redial [entry] [channel]",
+			summary: "call the last number dialled, or history entry N",
+			run:     (*CLI).cmdRedial,
 		},
 		{
 			name: "debug", usage: "debug [on|off]",
@@ -339,6 +350,12 @@ func (c *CLI) cmdStatus(_ context.Context, _ []string) error {
 	return nil
 }
 
+// fmtDuration renders a talk time as mm:ss.
+func fmtDuration(d time.Duration) string {
+	total := int(d.Seconds())
+	return fmt.Sprintf("%02d:%02d", total/60, total%60)
+}
+
 // debugState describes where SIP packets are currently going.
 func (c *CLI) debugState() string {
 	if c.tracer == nil {
@@ -443,6 +460,68 @@ func (c *CLI) cmdMute(_ context.Context, _ []string) error {
 func (c *CLI) cmdUnmute(_ context.Context, _ []string) error {
 	c.ctl.SetMuted(false)
 	c.printf("microphone live")
+	return nil
+}
+
+// cmdHistory prints the recent call log.
+func (c *CLI) cmdHistory(_ context.Context, args []string) error {
+	count := 20
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n < 1 {
+			return fmt.Errorf("history count must be a positive number, got %q", args[0])
+		}
+		count = n
+	}
+
+	records := c.ctl.Recent(count)
+	if len(records) == 0 {
+		if c.ctl.History() == nil {
+			return fmt.Errorf("call history is disabled (history.enabled in config)")
+		}
+		c.printf("no calls recorded yet")
+		return nil
+	}
+
+	for i, r := range records {
+		arrow := "->"
+		if r.Direction == history.Inbound {
+			arrow = "<-"
+		}
+		line := fmt.Sprintf("  %2d  %s  %s %-24s %-9s",
+			i+1, r.StartedAt.Format("02 Jan 15:04"), arrow, r.Remote, r.Disposition)
+		if r.TalkSeconds > 0 {
+			line += fmt.Sprintf(" %s", fmtDuration(time.Duration(r.TalkSeconds)*time.Second))
+		}
+		if r.Code != 0 {
+			line += fmt.Sprintf("  (%d %s)", r.Code, r.Reason)
+		}
+		c.printf("%s", line)
+	}
+	c.printf("  redial <n> calls one of these back")
+	return nil
+}
+
+// cmdRedial calls the last number dialled, or a numbered history entry.
+func (c *CLI) cmdRedial(ctx context.Context, args []string) error {
+	entry := 0
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n < 1 {
+			return fmt.Errorf("redial entry must be a positive number, got %q", args[0])
+		}
+		entry = n
+	}
+	channelID, err := parseChannel(args, 1)
+	if err != nil {
+		return err
+	}
+
+	used, target, err := c.ctl.Redial(ctx, entry, channelID)
+	if err != nil {
+		return err
+	}
+	c.printf("channel %d: calling %s", used, target)
 	return nil
 }
 

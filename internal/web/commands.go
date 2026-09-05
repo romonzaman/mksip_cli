@@ -102,6 +102,14 @@ func (s *Server) dispatch(ctx context.Context, cmd Command) (string, error) {
 		}
 		return fmt.Sprintf("consultation abandoned; back on channel %d", back), nil
 
+	case "redial":
+		// Channel 0 lets the controller pick, as a bare `redial` does.
+		id, target, err := s.ctl.Redial(ctx, cmd.Entry, cmd.Channel)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("channel %d: calling %s", id, target), nil
+
 	case "dtmf":
 		if err := s.ctl.SendDTMF(cmd.Channel, cmd.Digits); err != nil {
 			return "", err

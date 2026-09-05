@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"sipclient/internal/channel"
+	"sipclient/internal/history"
 	"sipclient/internal/sipua"
 )
 
@@ -18,7 +19,14 @@ type State struct {
 	// browser controls the client, it does not carry the audio.
 	AudioOnHost bool   `json:"audioOnHost"`
 	AudioDevice string `json:"audioDevice"`
+
+	// Recent is a short call log for the UI's recents list. Kept small
+	// deliberately: this rides along on every state push.
+	Recent []history.Record `json:"recent,omitempty"`
 }
+
+// RecentInState is how many history entries ride along with the state snapshot.
+const RecentInState = 8
 
 // RegistrationState describes the SIP registration (FR-2.6).
 type RegistrationState struct {
@@ -82,6 +90,8 @@ func (c *Controller) Snapshot() State {
 			s.Registration.RefreshInSeconds = int(d.Seconds())
 		}
 	}
+
+	s.Recent = c.Recent(RecentInState)
 
 	for _, ch := range c.mgr.Channels() {
 		snap := ch.Snapshot()

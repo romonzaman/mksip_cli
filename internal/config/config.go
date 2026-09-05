@@ -21,6 +21,17 @@ type Config struct {
 	Transfer Transfer `json:"transfer"`
 	Logging  Logging  `json:"logging"`
 	Web      Web      `json:"web"`
+	History  History  `json:"history"`
+}
+
+// History configures the call log.
+type History struct {
+	Enabled bool `json:"enabled"`
+	// File holds the records. Empty keeps history in memory only, so it is
+	// lost on restart.
+	File string `json:"file"`
+	// MaxEntries caps the log so it cannot grow without bound.
+	MaxEntries int `json:"max_entries"`
 }
 
 // Web configures the browser control surface (MKSIP-1001). Absent means off,
@@ -140,6 +151,11 @@ func Default() Config {
 		Audio: Audio{InputGain: 1.0, OutputGain: 1.0, RingbackEnabled: true},
 		Transfer: Transfer{
 			Mode: "refer", NotifyTimeoutSeconds: 30, HangupAfterSuccess: true,
+		},
+		History: History{
+			Enabled:    true,
+			File:       "call-history.jsonl",
+			MaxEntries: 200,
 		},
 		Web: Web{
 			Enabled:       false,
@@ -313,6 +329,12 @@ func (c *Config) Validate() error {
 	}
 	if t := c.Transfer.NotifyTimeoutSeconds; t < 1 || t > 300 {
 		bad("transfer.notify_timeout_seconds: must be 1-300, got %d", t)
+	}
+
+	if c.History.Enabled {
+		if n := c.History.MaxEntries; n < 1 || n > 100000 {
+			bad("history.max_entries: must be 1-100000, got %d", n)
+		}
 	}
 
 	if c.Web.Enabled {

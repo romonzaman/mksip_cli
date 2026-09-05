@@ -16,6 +16,7 @@ import (
 
 	"sipclient/internal/audio"
 	"sipclient/internal/config"
+	"sipclient/internal/history"
 	"sipclient/internal/media"
 	"sipclient/internal/sdputil"
 	"sipclient/internal/sipua"
@@ -38,6 +39,8 @@ type Channel struct {
 	log  *slog.Logger
 
 	emit func(Event)
+	// recordCall stores a finished call in the history log, if one is enabled.
+	recordCall func(history.Record)
 	// onStateChange lets the manager re-evaluate audio routing and refresh the
 	// status line whenever anything moves.
 	onStateChange func()
@@ -71,6 +74,15 @@ type Channel struct {
 	hangupRequested bool
 	cancelDial      context.CancelFunc
 
+	// dispositionHint overrides how a finishing call is recorded, for paths
+	// that know better than the state machine can infer -- a rejection, or a
+	// setup failure with a SIP code.
+	dispositionHint history.Disposition
+	hintCode        int
+	hintReason      string
+	// remoteURI is the dialable form of the peer, kept for redial.
+	remoteURI string
+
 	// dialTarget and dialDisplay remember the last outbound call, so a 422
 	// Session Interval Too Small can be retried with the peer's minimum.
 	dialTarget     sip.Uri
@@ -94,11 +106,12 @@ type Channel struct {
 
 // New builds an idle channel.
 func New(id int, cfg config.Config, ua *sipua.UA, pool *media.PortPool,
-	leg *audio.Leg, logger *slog.Logger, emit func(Event), onStateChange func()) *Channel {
+	leg *audio.Leg, logger *slog.Logger, emit func(Event), onStateChange func(),
+	recordCall func(history.Record)) *Channel {
 	return &Channel{
 		ID: id, cfg: cfg, ua: ua, pool: pool, leg: leg,
 		log:  logger.With("channel", id),
-		emit: emit, onStateChange: onStateChange,
+		emit: emit, onStateChange: onStateChange, recordCall: recordCall,
 		state: Idle,
 	}
 }
@@ -350,6 +363,7 @@ func (c *Channel) Dial(ctx context.Context, target sip.Uri, display string) erro
 	c.inbound = false
 	c.remote = display
 	c.dialTarget, c.dialDisplay = target, display
+	c.remoteURI = (&target).String()
 	c.startedAt = time.Now()
 	c.connectedAt = time.Time{}
 	c.hangupRequested = false
@@ -522,20 +536,41 @@ func (c *Channel) onEarlyMedia(res *sip.Response) {
 }
 
 func (c *Channel) onDialFailed(dlg *sipgo.DialogClientSession, err error) {
+	var resErr *sipgo.ErrDialogResponse
+	rejected := errors.As(err, &resErr) && resErr.Res != nil
+
 	c.mu.Lock()
 	wasHangup := c.hangupRequested
+
+	// Classify before tearing down, while the call's details are still here.
+	// This path does not go through reset(), so it records its own entry.
+	switch {
+	case rejected:
+		c.dispositionHint = history.Failed
+		c.hintCode = int(resErr.Res.StatusCode)
+		c.hintReason = resErr.Res.Reason
+	case wasHangup || errors.Is(err, context.Canceled):
+		c.dispositionHint = history.Cancelled
+	default:
+		c.dispositionHint = history.Failed
+		c.hintReason = err.Error()
+	}
+	if rec, ok := c.finishRecord(); ok {
+		defer c.recordCall(rec)
+	}
+
 	c.stopMedia()
 	c.clientDlg = nil
 	c.dialog = nil
 	c.setState(Idle)
 	c.remote = ""
+	c.clearRecordState()
 	c.mu.Unlock()
 
 	_ = dlg.Close()
 
-	var resErr *sipgo.ErrDialogResponse
 	switch {
-	case errors.As(err, &resErr) && resErr.Res != nil:
+	case rejected:
 		c.emit(Event{Kind: EventInfo, Channel: c.ID,
 			Text: fmt.Sprintf("call failed: %d %s", resErr.Res.StatusCode, resErr.Res.Reason)})
 	case wasHangup || errors.Is(err, context.Canceled):
@@ -647,6 +682,11 @@ func (c *Channel) watchDialog(dlg sipua.Dialog) {
 	// plainly wrong, so let the hangup path own the message.
 	byUs := c.hangupRequested
 	if ended {
+		// This watcher is a teardown path in its own right and usually beats
+		// reset() to it, so it must record the call or the entry is lost.
+		if rec, ok := c.finishRecord(); ok {
+			defer c.recordCall(rec)
+		}
 		c.stopMedia()
 		c.dialog, c.clientDlg, c.serverDlg = nil, nil, nil
 		c.setState(Idle)
@@ -654,6 +694,8 @@ func (c *Channel) watchDialog(dlg sipua.Dialog) {
 		c.localHeld, c.remoteHeld = false, false
 		c.codec = media.Codec{}
 		c.connectedAt = time.Time{}
+		c.startedAt = time.Time{}
+		c.clearRecordState()
 	}
 	c.mu.Unlock()
 	if ended && !byUs {

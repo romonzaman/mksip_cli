@@ -379,7 +379,8 @@ func (c *CLI) completer() readline.AutoCompleter {
 	items := make([]readline.PrefixCompleterInterface, 0, len(c.order))
 	for _, name := range c.order {
 		switch name {
-		case "answer", "reject", "hangup", "hold", "unhold", "stats", "cancelxfer", "xfer":
+		case "answer", "reject", "hangup", "hold", "unhold", "stats", "cancelxfer", "xfer",
+			"redial":
 			items = append(items, readline.PcItem(name, channels...))
 		case "debug":
 			items = append(items, readline.PcItem(name,
