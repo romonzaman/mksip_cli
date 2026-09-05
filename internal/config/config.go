@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the fully resolved configuration. Absent JSON fields keep the
@@ -45,6 +46,13 @@ type SIP struct {
 	OutboundProxy         string `json:"outbound_proxy"`
 	RegisterExpirySeconds int    `json:"register_expiry_seconds"`
 	UserAgent             string `json:"user_agent"`
+
+	// SessionExpiresSeconds is the RFC 4028 session interval to propose.
+	// 0 disables session timers entirely: the client then neither offers them
+	// nor acts as refresher, which is how it behaved before they existed.
+	SessionExpiresSeconds int `json:"session_expires_seconds"`
+	// MinSESeconds is the shortest session interval we will accept from a peer.
+	MinSESeconds int `json:"min_se_seconds"`
 }
 
 type Server struct {
@@ -116,6 +124,8 @@ func Default() Config {
 			Server:                Server{Port: 5060, Transport: "udp"},
 			RegisterExpirySeconds: 300,
 			UserAgent:             "sipclient-cli/1.0",
+			SessionExpiresSeconds: 1800,
+			MinSESeconds:          90,
 		},
 		// Port 0 means the OS picks a free SIP port, so the client never
 		// collides with a PBX or another SIP process on the same host.
@@ -227,6 +237,19 @@ func (c *Config) Validate() error {
 	}
 	if e := c.SIP.RegisterExpirySeconds; e < 60 || e > 3600 {
 		bad("sip.register_expiry_seconds: must be 60-3600, got %d", e)
+	}
+
+	// Session timers: 0 disables them; otherwise RFC 4028 §4 sets 90s as the
+	// smallest interval any implementation must accept.
+	if e := c.SIP.SessionExpiresSeconds; e != 0 {
+		if e < 90 || e > 86400 {
+			bad("sip.session_expires_seconds: must be 0 (disabled) or 90-86400, got %d", e)
+		}
+		if m := c.SIP.MinSESeconds; m < 90 || m > 86400 {
+			bad("sip.min_se_seconds: must be 90-86400, got %d", m)
+		} else if m > e {
+			bad("sip.min_se_seconds (%d) cannot exceed sip.session_expires_seconds (%d)", m, e)
+		}
 	}
 
 	if p := c.Network.LocalSIPPort; p < 0 || p > 65535 {
@@ -342,6 +365,12 @@ func (c *Config) WebAddr() string {
 // EphemeralRTPPorts reports whether the OS assigns RTP ports per call.
 func (c *Config) EphemeralRTPPorts() bool {
 	return c.Media.RTPPortStart == 0 && c.Media.RTPPortEnd == 0
+}
+
+// SessionTimer renders the session-timer settings as durations.
+func (c *Config) SessionTimer() (expires, minSE time.Duration) {
+	return time.Duration(c.SIP.SessionExpiresSeconds) * time.Second,
+		time.Duration(c.SIP.MinSESeconds) * time.Second
 }
 
 // AOR is the address of record, sip:user@domain.

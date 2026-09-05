@@ -103,6 +103,17 @@ func (c *Channel) Answer(ctx context.Context) error {
 		return fmt.Errorf("inbound SDP: %w", err)
 	}
 
+	// Session timer (RFC 4028). A peer asking for a shorter interval than we
+	// accept must be told our minimum so it can retry, not silently accepted.
+	stCfg := c.ua.SessionTimerConfig()
+	sessionTimer, timerHeaders, tooSmall := stCfg.NegotiateIncoming(dlg.InviteRequest)
+	if tooSmall {
+		c.mu.Unlock()
+		_ = dlg.WriteResponse(stCfg.TooSmallResponse(dlg.InviteRequest))
+		c.reset("caller asked for too short a session interval")
+		return fmt.Errorf("session interval below our minimum")
+	}
+
 	codecs, err := c.codecList()
 	if err != nil {
 		c.mu.Unlock()
@@ -155,11 +166,12 @@ func (c *Channel) Answer(ctx context.Context) error {
 	}
 	c.info = info
 	c.connectedAt = time.Now()
+	c.startSessionTimer(sessionTimer)
 	c.setState(Connected)
 	c.applyMedia()
 	c.mu.Unlock()
 
-	if err := dlg.RespondSDP(answer); err != nil {
+	if err := c.respondAnswer(dlg, answer, timerHeaders); err != nil {
 		c.reset("failed to send 200 OK")
 		return fmt.Errorf("send 200 OK: %w", err)
 	}
@@ -408,9 +420,40 @@ func (c *Channel) HandleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	contact := c.ua.Contact()
 	res.AppendHeader(&contact)
+
+	// A re-INVITE is how the peer refreshes the session, so echo the agreed
+	// timer back and restart our watchdog. Without this the call would be torn
+	// down mid-conversation even though the peer is refreshing correctly.
+	if st := c.SessionTimer(); st.Active() {
+		res.AppendHeader(sip.NewHeader("Session-Expires",
+			sipua.SessionExpiresValue(st.Interval, st.Refresher)))
+		res.AppendHeader(sip.NewHeader("Require", "timer"))
+	}
+
 	if err := tx.Respond(res); err != nil {
 		c.log.Warn("re-INVITE response failed", "error", err)
 	}
+	c.noteSessionRefreshed()
+}
+
+// respondAnswer sends the 200 OK with SDP plus any negotiated extra headers.
+func (c *Channel) respondAnswer(dlg *sipgo.DialogServerSession, sdp []byte,
+	extra []sip.Header) error {
+
+	if len(extra) == 0 {
+		return dlg.RespondSDP(sdp)
+	}
+	headers := append([]sip.Header{
+		sip.NewHeader("Content-Type", "application/sdp"),
+	}, extra...)
+	return dlg.Respond(sip.StatusOK, "OK", sdp, headers...)
+}
+
+// SessionTimer reports the negotiated session timer for this channel.
+func (c *Channel) SessionTimer() sipua.SessionTimer {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sessionTimer
 }
 
 // HandleBye answers a peer BYE. sipgo's ReadBye responds 200 and moves the

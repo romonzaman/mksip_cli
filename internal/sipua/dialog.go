@@ -182,9 +182,14 @@ func (u *UA) SendREFER(ctx context.Context, dlg Dialog, requestURI, target sip.U
 // sipgo's Do handles the INVITE transaction but deliberately does not ACK,
 // since it cannot know whether the request is an initial INVITE or a
 // re-INVITE, so the ACK is built here against the re-INVITE's own CSeq.
-func (u *UA) SendReInvite(ctx context.Context, dlg Dialog, target sip.Uri, sdp []byte) (*sip.Response, error) {
+func (u *UA) SendReInvite(ctx context.Context, dlg Dialog, target sip.Uri, sdp []byte,
+	extra ...sip.Header) (*sip.Response, error) {
+
 	req := sip.NewRequest(sip.INVITE, target)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	for _, h := range extra {
+		req.AppendHeader(h)
+	}
 	req.SetBody(sdp)
 
 	res, err := dlg.Do(ctx, req)

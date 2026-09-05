@@ -85,6 +85,8 @@ The primary use case is manual and scripted verification of PBX call-control beh
     },
     "outbound_proxy": "",
     "register_expiry_seconds": 300,
+    "session_expires_seconds": 1800,
+    "min_se_seconds": 90,
     "user_agent": "sipclient-cli/1.0"
   },
   "network": {
@@ -139,6 +141,8 @@ The primary use case is manual and scripted verification of PBX call-control beh
 | `server.transport` | no | `"udp"` | `"udp"` or `"tcp"` only in v1. |
 | `outbound_proxy` | no | `""` | If set, all requests route here regardless of Request-URI. |
 | `register_expiry_seconds` | no | `300` | Requested `Expires`; 60–3600. |
+| `session_expires_seconds` | no | `1800` | RFC 4028 session interval to propose. `0` disables session timers. Otherwise 90–86400. |
+| `min_se_seconds` | no | `90` | Shortest session interval accepted from a peer; a shorter request is answered `422`. 90–86400, and never above `session_expires_seconds`. |
 | `user_agent` | no | `sipclient-cli/<version>` | `User-Agent` header value. |
 
 **`network`**
@@ -329,8 +333,25 @@ use`. TCP dials from an ephemeral port and reuses that connection for the dialog
 - **FR-4.10 DTMF** — `dtmf <digits> [channel]` sends digits `0-9*#A-D` on the given channel
   using `media.dtmf_mode`. RFC 4733 events MUST use the negotiated `telephone-event` payload
   type, 3 packets per digit with the end bit set on the last, and honour inter-digit gaps.
-- **FR-4.11** — Session timers (RFC 4028) SHOULD be supported to the extent of answering the
-  PBX's refresh re-INVITEs; the client is not required to initiate them.
+- **FR-4.11** — Session timers (RFC 4028) MUST be supported, in both directions.
+
+  The failure this prevents is specific: when the PBX names the client as refresher and the
+  client never refreshes, the PBX tears the call down at its interval — typically 30 minutes —
+  with nothing the user can see. A long call simply ends, and the phone looks blameless.
+
+  | Situation | Required behaviour |
+  |---|---|
+  | Outbound `INVITE` | Advertise `Supported: timer` and offer `Session-Expires` plus `Min-SE`. `timer` MUST NOT go in `Require`: demanding it fails the call against a PBX that lacks it, and a call without a session timer is still a working call. |
+  | Answer names no refresher | The UAC is responsible (RFC 4028 §7.1) — that is us. Getting this backwards is precisely how the call dies. |
+  | Answer omits `Session-Expires` | No timer. The client MUST NOT refresh unbidden. |
+  | We are refresher | Send a re-INVITE at **half** the interval, so one lost refresh still leaves time for another. A rejected refresh MUST be retried on the next tick, not treated as fatal. |
+  | Peer is refresher | Watch for its re-INVITE. If none arrives within the interval plus a grace period, the session is dead at the far end and the client MUST hang up rather than show a call that no longer exists. |
+  | Peer's refresh arrives | Answer it, echo the agreed `Session-Expires`, and restart the watchdog. |
+  | Inbound `INVITE` below our `Min-SE` | Reject with `422 Session Interval Too Small` carrying our `Min-SE`, rather than silently accepting an interval we will not honour. |
+  | Our `INVITE` rejected `422` | Retry **once** with the interval the peer demands. Failing the call instead would make the client unusable against any PBX with a longer minimum. |
+
+  Setting `sip.session_expires_seconds` to `0` disables the feature entirely, restoring the
+  earlier behaviour of neither offering timers nor refreshing.
 - **FR-4.12** — `INVITE` transactions MUST honour Timer B / Timer F expiry and report a
   timeout rather than hanging in `CALLING` forever.
 
@@ -652,6 +673,11 @@ Additional failure paths covered beyond the original list:
 | FR-9.2 | Status-line format | `TestSnapshotLabel` |
 | §3.3 `transport` | Registration, call, hold and warm transfer over SIP/TCP | `TestTCPTransport`, `TestTCPWarmTransfer` |
 | FR-2.8 | An inbound call arriving over the transport we did **not** register on is accepted | `TestInboundCallOverOtherTransport` |
+| FR-4.11 | A call outlives its session interval because the client refreshes | `TestSessionTimerKeepsLongCallAlive` |
+| FR-4.11 | The peer's refresh is answered, and we do not refresh when it said it would | `TestSessionTimerAnswersPeerRefresh` |
+| FR-4.11 | `422 Session Interval Too Small` is retried, not fatal | `TestSessionIntervalTooSmallRetries` |
+| FR-4.11 | Disabled by config, the client offers and sends nothing | `TestSessionTimerDisabled` |
+| FR-4.11 | Header parsing, refresher defaulting and 422 handling | `internal/sipua` session timer tests |
 | FR-2.8 | Inbound call over TCP, by connection reuse and by a fresh connection to our Contact | `TestInboundCallOverTCPConnectionReuse`, `TestInboundCallOverTCPViaContact` |
 | §3.3 `advertise_address` | SDP carries the media address while SIP keeps the signalling one | `TestMediaAdvertiseAddress`, `TestMediaAddressDefaultsToSignalling` |
 | FR-2.11 | Inbound calls, transfers and media all work with an OS-assigned SIP port | every scenario test (the harness leaves `local_sip_port` at `0`) |

@@ -12,6 +12,8 @@
     },
     "outbound_proxy": "",
     "register_expiry_seconds": 300,
+    "session_expires_seconds": 1800,
+    "min_se_seconds": 90,
     "user_agent": "sipclient-cli/1.0"
   },
   "network": {
