@@ -15,16 +15,17 @@ import (
 	"sipclient/internal/applog"
 	"sipclient/internal/channel"
 	"sipclient/internal/config"
+	"sipclient/internal/control"
 	"sipclient/internal/sipua"
 	"sipclient/internal/transfer"
 )
 
 // CLI is the interactive shell.
 type CLI struct {
-	cfg  config.Config
-	ua   *sipua.UA
-	mgr  *channel.Manager
-	xfer *transfer.Transferor
+	cfg config.Config
+	ctl *control.Controller
+	ua  *sipua.UA
+	mgr *channel.Manager
 
 	tracer     *applog.Tracer
 	deviceDesc string
@@ -59,9 +60,7 @@ type CLI struct {
 // Options configures the CLI.
 type Options struct {
 	Config     config.Config
-	UA         *sipua.UA
-	Manager    *channel.Manager
-	Transferor *transfer.Transferor
+	Controller *control.Controller
 	Tracer     *applog.Tracer
 	DeviceDesc string
 }
@@ -70,16 +69,16 @@ type Options struct {
 func New(opt Options) *CLI {
 	c := &CLI{
 		cfg:        opt.Config,
-		ua:         opt.UA,
-		mgr:        opt.Manager,
-		xfer:       opt.Transferor,
+		ctl:        opt.Controller,
+		ua:         opt.Controller.UA(),
+		mgr:        opt.Controller.Manager(),
 		tracer:     opt.Tracer,
 		deviceDesc: opt.DeviceDesc,
 		out:        os.Stdout,
 		quit:       make(chan struct{}),
 	}
 	c.buildCommands()
-	c.events, c.unsubscribeEvents = opt.Manager.Subscribe()
+	c.events, c.unsubscribeEvents = c.mgr.Subscribe()
 	return c
 }
 

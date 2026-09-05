@@ -18,6 +18,7 @@ import (
 	"sipclient/internal/channel"
 	"sipclient/internal/cli"
 	"sipclient/internal/config"
+	"sipclient/internal/control"
 	"sipclient/internal/media"
 	"sipclient/internal/sipua"
 	"sipclient/internal/transfer"
@@ -147,15 +148,17 @@ func run() int {
 
 	transferor := transfer.New(cfg, manager, logger.Logger)
 
+	// The operations both surfaces share (§4.1 of the MKSIP-1001 plan).
+	controller := control.New(cfg, ua, manager, transferor)
+	controller.SetAudioDevice(device.Description())
+
 	// 5. Registration runs for the whole session (FR-2.2).
 	go ua.RunRegistration(ctx)
 
 	// 6. CLI.
 	shell := cli.New(cli.Options{
 		Config:     cfg,
-		UA:         ua,
-		Manager:    manager,
-		Transferor: transferor,
+		Controller: controller,
 		Tracer:     logger.Tracer(),
 		DeviceDesc: device.Description(),
 	})
