@@ -191,8 +191,21 @@ Enable it in config instead of by flag with:
 
 ## Speakerphone
 
-Acoustic echo cancellation is on by default, so the far end does not hear themselves when you
-use the laptop speakers.
+Acoustic echo cancellation stops the far end hearing themselves when you use the laptop
+speakers. It is **off by default**, since a headset gives it nothing to cancel. Turn it on
+for a run:
+
+```
+sipclient -echo-cancel
+```
+
+or leave it on in the config:
+
+```jsonc
+"audio": { "echo_cancel": true, "echo_tail_ms": 128 }
+```
+
+`-echo-cancel=false` forces it off again for one run without editing the file.
 
 It needs a **duplex** audio device, so the microphone frame and the speaker frame arrive
 together — that alignment is what makes cancellation tractable. If the chosen microphone and
@@ -209,11 +222,11 @@ echo cancellation: converged, 31 dB reduction
 ```
 
 Above about 20 dB the echo is inaudible. "adapting" means the filter is still learning the
-room; it converges within a few seconds of the far end speaking.
+room; it converges within a few seconds of the far end speaking. When it is switched off, or
+when no duplex device could be opened, the same line reads `echo cancellation: off`.
 
-```jsonc
-"audio": { "echo_cancel": true, "echo_tail_ms": 128 }
-```
+Whether it is on is settled when the audio device opens, because cancellation needs a duplex
+device — so it is a startup choice, not something to toggle mid-call.
 
 `echo_tail_ms` is how long an echo path to model. The default suits a laptop; a large,
 reverberant room may want more, at the cost of slower convergence.

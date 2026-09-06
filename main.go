@@ -51,6 +51,9 @@ func run() int {
 		"serve the browser control UI on loopback")
 	webPort := flag.Int("web-port", 0,
 		"port for the browser control UI (implies -web; 0 uses the configured port)")
+	echoCancel := flag.Bool("echo-cancel", false,
+		"cancel acoustic echo for speakerphone use; overrides audio.echo_cancel "+
+			"whether given as true or false")
 	flag.Parse()
 
 	if *showVersion {
@@ -103,11 +106,15 @@ func run() int {
 	if *webPort != 0 {
 		cfg.Web.Port = *webPort
 	}
-	if cfg.Web.Enabled {
-		if err := cfg.Validate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return exitConfig
-		}
+	// Only when -echo-cancel was actually typed, so its own false default
+	// cannot silently override an audio.echo_cancel of true.
+	if flagWasSet(flag.CommandLine, "echo-cancel") {
+		cfg.Audio.EchoCancel = *echoCancel
+	}
+	// Re-validate: the flags above can reach fields Validate has rules for.
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return exitConfig
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -287,4 +294,20 @@ func (d deferredWriter) Write(p []byte) (int, error) {
 		return w.Write(p)
 	}
 	return os.Stderr.Write(p)
+}
+
+// flagWasSet reports whether name was given on the command line.
+//
+// A bool flag cannot express "leave the config alone": its zero value is
+// indistinguishable from an explicit -flag=false. Asking which flags were
+// actually typed is what lets -echo-cancel override the config in both
+// directions while an absent flag overrides nothing.
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }

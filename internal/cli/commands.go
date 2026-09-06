@@ -416,6 +416,11 @@ func (c *CLI) cmdStats(_ context.Context, args []string) error {
 			state += ", both talking"
 		}
 		c.printf("echo cancellation: %s, %.0f dB reduction", state, st.ERLE)
+	} else {
+		// Either switched off, or a duplex device could not be opened -- the
+		// startup warning says which. Saying so beats printing nothing, since
+		// silence reads as "no echo" rather than "not cancelling".
+		c.printf("echo cancellation: off")
 	}
 	if !any {
 		return fmt.Errorf("no active media session")

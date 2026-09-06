@@ -116,6 +116,10 @@ type Audio struct {
 	// EchoCancel removes the far end's voice from the microphone, which is
 	// what makes a speakerphone usable. It requires a duplex audio device; if
 	// one cannot be opened the client says so and carries on without it.
+	//
+	// Off by default: it is only wanted on a speakerphone, and a headset --
+	// where it has nothing to cancel -- is the common case. Turn it on here or
+	// with -echo-cancel.
 	EchoCancel bool `json:"echo_cancel"`
 	// EchoTailMS is how long an echo path to model. Longer covers a more
 	// reverberant room but converges more slowly.
@@ -158,7 +162,7 @@ func Default() Config {
 		},
 		Audio: Audio{
 			InputGain: 1.0, OutputGain: 1.0, RingbackEnabled: true,
-			EchoCancel: true, EchoTailMS: 128,
+			EchoCancel: false, EchoTailMS: 128,
 		},
 		Transfer: Transfer{
 			Mode: "refer", NotifyTimeoutSeconds: 30, HangupAfterSuccess: true,

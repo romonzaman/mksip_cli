@@ -49,8 +49,10 @@ func TestEchoCancellationOnRealDevice(t *testing.T) {
 	}
 }
 
-// TestEchoCancellationDisabledUsesSeparateDevices: with it off the client must
-// behave exactly as before.
+// TestEchoCancellationDisabled: with it off the client must use separate
+// devices and say so, rather than reporting a cancellation figure. It has to
+// say something -- off is the default now, so silence about it would read as
+// "no echo here" to anyone running stats to explain echo on a speakerphone.
 func TestEchoCancellationDisabled(t *testing.T) {
 	pbx := startPBX(t, nil)
 	cfgPath := writeConfig(t, testDir(t), pbx, func(c *config.Config) {
@@ -67,7 +69,10 @@ func TestEchoCancellationDisabled(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0\n%s", code, out)
 	}
-	if strings.Contains(out, "echo cancellation:") {
-		t.Error("echo cancellation reported though it is disabled")
+	if !strings.Contains(out, "echo cancellation: off") {
+		t.Errorf("stats must report echo cancellation as off\n%s", out)
+	}
+	if strings.Contains(out, "dB reduction") {
+		t.Errorf("a cancellation figure was reported though it is disabled\n%s", out)
 	}
 }
