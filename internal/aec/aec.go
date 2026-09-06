@@ -98,6 +98,12 @@ type Canceller struct {
 	// how well this filter cancels when only echo is present. Near-end speech
 	// is what pushes the current ratio above it.
 	echoFloor float64
+	// echoGain is the microphone-to-reference energy ratio this echo path
+	// delivers -- whatever the speaker volume and microphone preamp combine to
+	// make it, which is not knowable in advance. It is the baseline the
+	// pre-convergence detector compares against, so that detector works at any
+	// hardware gain instead of assuming the echo is quieter than the reference.
+	echoGain float64
 
 	suppressionGain float32
 
@@ -129,13 +135,26 @@ const (
 	stepSize = 0.3
 	// regularisation keeps the NLMS denominator away from zero on quiet input.
 	regularisation = 1e-6
-	// geigelThreshold is used only before the filter converges, when there is
-	// no residual to reason about. It is deliberately permissive: it declares
-	// near-end speech only when the microphone is louder than the reference
-	// itself. A tighter value would fire on a loud echo path and block the
-	// very adaptation needed to converge -- a deadlock, since convergence is
-	// what enables the better detector below.
-	geigelThreshold = 1.0
+	// geigelRise is how far the microphone-to-reference energy ratio must climb
+	// above the echo path's own measured gain before near-end speech is
+	// declared, while the filter is still converging. 4.0 in energy is 2x in
+	// amplitude, about 6dB.
+	//
+	// It is measured against the path gain, not against the reference level.
+	// Comparing the microphone directly to the reference assumes the echo comes
+	// back quieter than the signal that produced it; on real hardware it does
+	// not, because the microphone preamp applies gain the digital reference
+	// knows nothing about. A laptop in a quiet room measures a mic peak several
+	// times the reference peak, so that test fired on every single frame and
+	// froze adaptation permanently: the filter never converged, the residual
+	// detector below never took over, and no echo was ever cancelled.
+	geigelRise = 4.0
+	// gainFall and gainRise track the measured path gain asymmetrically: drop
+	// towards a newly observed quieter ratio quickly, since only echo can be
+	// that quiet, but climb back slowly so near-end speech cannot drag the
+	// baseline up behind it.
+	gainFall = 0.3
+	gainRise = 0.001
 	// dtdResidualRise is how far the residual-to-microphone ratio must climb
 	// above its established floor before near-end speech is declared. Once
 	// converged, the filter cancels echo to a steady floor; near-end speech
@@ -181,6 +200,7 @@ func New(cfg Config) *Canceller {
 		ref:             make([]float32, tail+cfg.FrameSamples),
 		suppressionGain: 1,
 		echoFloor:       1,
+		echoGain:        math.Inf(1), // seeded by the first frame that has echo
 		micBuf:          make([]float32, cfg.FrameSamples),
 		refBuf:          make([]float32, cfg.FrameSamples),
 		outBuf:          make([]float32, cfg.FrameSamples),
@@ -206,6 +226,7 @@ func (c *Canceller) Reset() {
 	c.doubleTalk, c.doubleTalkHold = false, 0
 	c.suppressionGain = 1
 	c.echoFloor = 1
+	c.echoGain = math.Inf(1)
 	c.publishStats()
 }
 
@@ -247,7 +268,7 @@ func (c *Canceller) processFloat(out, mic, ref []float32) {
 	c.micEnergy = smooth(c.micEnergy, frameMicEnergy)
 
 	farActive := c.refEnergy > refActiveEnergy
-	c.detectDoubleTalk(mic, farActive)
+	c.detectDoubleTalk(farActive, frameMicEnergy, frameRefEnergy)
 	adapt := farActive && !c.doubleTalk
 
 	for i := 0; i < n; i++ {
@@ -308,15 +329,18 @@ func (c *Canceller) windowPower(window []float32) float64 {
 //
 // Two detectors, because neither works alone:
 //
-//   - Before convergence there is no residual to reason about, so a permissive
-//     Geigel test is used: only a microphone louder than the reference itself
-//     counts as near-end. Anything stricter would fire on a loud echo path and
-//     block the adaptation needed to converge at all.
+//   - Before convergence there is no residual to reason about, so the
+//     microphone is compared against the echo path's own measured gain: near-end
+//     speech is what pushes that ratio above where this path normally sits.
+//     Comparing against the reference level instead would assume the echo comes
+//     back quieter than the signal that produced it, which real hardware does
+//     not honour -- and firing on every frame would block the adaptation needed
+//     to converge at all, so the detector below could never take over.
 //   - Once converged, the filter cancels echo down to a steady floor. Near-end
 //     speech cannot be cancelled, so it appears at once as a jump in the
 //     residual. This works however loud the echo path is, which is exactly
 //     where the Geigel test fails.
-func (c *Canceller) detectDoubleTalk(mic []float32, farActive bool) {
+func (c *Canceller) detectDoubleTalk(farActive bool, frameMicEnergy, frameRefEnergy float64) {
 	if !farActive {
 		// With no far end there is no echo to confuse the filter, and nothing
 		// to suppress. Whatever the microphone hears is the near end.
@@ -329,9 +353,18 @@ func (c *Canceller) detectDoubleTalk(mic []float32, farActive bool) {
 	if c.Converged() && c.micEnergy > 0 {
 		ratio := c.outEnergy / c.micEnergy
 		near = ratio > c.echoFloor*dtdResidualRise
-	} else {
-		refPeak := peak(c.ref)
-		near = refPeak > 0 && peak(mic) > geigelThreshold*refPeak
+	} else if frameRefEnergy > refActiveEnergy {
+		// This frame carries real reference audio, so the microphone-to-
+		// reference ratio means something. Compare it against what this path
+		// has been delivering rather than against the reference itself.
+		ratio := frameMicEnergy / frameRefEnergy
+		if math.IsInf(c.echoGain, 1) {
+			c.echoGain = ratio // first echo seen: nothing to compare against yet
+		}
+		near = ratio > c.echoGain*geigelRise
+		if !near {
+			c.trackEchoGain(ratio)
+		}
 	}
 
 	switch {
@@ -344,6 +377,21 @@ func (c *Canceller) detectDoubleTalk(mic []float32, farActive bool) {
 	default:
 		c.doubleTalk = false
 	}
+}
+
+// trackEchoGain updates the measured echo path gain from a frame believed to
+// carry echo only. Falling fast and rising slowly means a quiet frame settles
+// the baseline at once, while near-end speech -- which can only push the ratio
+// up -- cannot drag it along and blind the detector.
+func (c *Canceller) trackEchoGain(ratio float64) {
+	if ratio <= 0 {
+		return
+	}
+	rate := gainRise
+	if ratio < c.echoGain {
+		rate = gainFall
+	}
+	c.echoGain += rate * (ratio - c.echoGain)
 }
 
 // updateEchoFloor records how well the filter cancels when only echo is
@@ -474,19 +522,6 @@ func energy(x []float32) float64 {
 		sum += float64(v) * float64(v)
 	}
 	return sum / float64(len(x))
-}
-
-func peak(x []float32) float32 {
-	var m float32
-	for _, v := range x {
-		if v < 0 {
-			v = -v
-		}
-		if v > m {
-			m = v
-		}
-	}
-	return m
 }
 
 func smooth(prev, now float64) float64 {

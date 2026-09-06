@@ -1,25 +1,23 @@
 {
   "sip": {
-    "username": "1001",
-    "auth_username": "1001",
-    "password": "env:SIP_PASSWORD",
-    "display_name": "CLI Client",
-    "domain": "pbx.example.com",
+    "username": "1004",
+    "auth_username": "1004",
+    "password": "",
+    "display_name": "Cli 1004",
+    "domain": "mkzaman",
     "server": {
-      "host": "10.0.0.10",
+      "host": "172.28.0.10",
       "port": 5060,
-      "transport": "udp"
+      "transport": "tcp"
     },
     "outbound_proxy": "",
     "register_expiry_seconds": 300,
-    "session_expires_seconds": 1800,
-    "min_se_seconds": 90,
-    "user_agent": "sipclient-cli/1.0"
+    "user_agent": "sipzaman-cli/1.0"
   },
   "network": {
     "local_address": "",
     "local_sip_port": 0,
-    "public_address": "",
+    "public_address": "0.250.250.254",
     "stun_server": "",
     "rport": true
   },
@@ -35,24 +33,12 @@
     "output_device": "",
     "input_gain": 1.0,
     "output_gain": 1.0,
-    "ringback_enabled": true,
-    "echo_cancel": false,
-    "echo_tail_ms": 128
+    "ringback_enabled": true
   },
   "transfer": {
     "mode": "refer",
     "notify_timeout_seconds": 30,
     "hangup_after_success": true
-  },
-  "history": {
-    "enabled": true,
-    "file": "call-history.jsonl",
-    "max_entries": 200
-  },
-  "web": {
-    "enabled": false,
-    "listen_address": "127.0.0.1",
-    "port": 8080
   },
   "logging": {
     "level": "info",

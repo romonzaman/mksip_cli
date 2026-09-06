@@ -183,7 +183,7 @@ use`. TCP dials from an ephemeral port and reuses that connection for the dialog
 | `output_device` | no | system default | As above. |
 | `input_gain` / `output_gain` | no | `1.0` | Linear multiplier, 0.0–4.0, applied with clipping protection. |
 | `ringback_enabled` | no | `true` | Generate local ringback tone when the PBX sends `180` without early media. |
-| `echo_cancel` | no | `true` | Cancel acoustic echo, so the speakerphone is usable. Requires a duplex device; falls back with a warning when one cannot be opened. |
+| `echo_cancel` | no | `false` | Cancel acoustic echo, so the speakerphone is usable. Off by default, since a headset gives it nothing to cancel. Requires a duplex device; falls back with a warning when one cannot be opened. `-echo-cancel[=false]` overrides it for one run. |
 | `echo_tail_ms` | no | `128` | How long an echo path to model, 16–500. Longer covers a more reverberant room but converges more slowly. |
 
 **`transfer`**
